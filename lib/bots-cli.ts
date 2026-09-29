@@ -1,27 +1,32 @@
 import type { BbPluginApi, PluginCliContext } from "@get-bb/plugin-sdk";
-import type { BotMetadata } from "../contract";
+import { botCreateRequestSchema, type BotCreateRequest, type BotMetadata } from "../contract";
 import type { BotStore } from "./bot-store";
 import { listBotConversations } from "./bot-conversations";
 import { conversationRoots, orderConversations } from "./conversation-order";
 
 const USAGE = `bb bots list [--json] [--limit 1-100] [--offset N]
 bb bots message <bot-id-or-exact-name> <message> [--thread <conversation-id>] [--json]
+bb bots create <name> [--role <role>] [--soul <identity>] [--project <project-id> [--own]] [--host <host-id>] [--json]
 
 Messages go to the bot's first conversation by default and queue while it is busy.
 --thread targets a conversation belonging to that bot (for replies).
 Sender identity comes from the invoking BB thread; there is no --from override.
 Quote names/messages containing spaces. Use -- before positional values beginning with --.
-List output contains public bot metadata, never private state.`;
+List output contains public bot metadata, never private state.
+Create when the user asks for a bot. --soul sets SOUL.md (max 4096 characters). --project joins a
+work project; add --own only when asked to route its new threads to the bot. Appearance is random;
+the machine defaults to the first connected one. The new bot starts with no conversations.`;
 const MESSAGE_MAX_CHARS = 12000;
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const printable = (value: string) => value.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
-type Options = { command: "list" | "message"; json: boolean; limit: number; offset: number; threadId?: string; positional: string[] };
+const CREATE_OPTIONS: Record<string, "role" | "soul" | "projectId" | "hostId"> = { "--role": "role", "--soul": "soul", "--project": "projectId", "--host": "hostId" };
+type Options = { command: "list" | "message" | "create"; json: boolean; limit: number; offset: number; threadId?: string; own: boolean; create: Partial<Record<"role" | "soul" | "projectId" | "hostId", string>>; positional: string[] };
 function parse(argv: string[]): Options | null {
   if (!argv.length || argv[0] === "--help" || argv[0] === "help") return null;
   const command = argv[0];
-  if (command !== "list" && command !== "message") throw new Error(`Unknown command: ${command}\n${USAGE}`);
-  const options: Options = { command, json: false, limit: 50, offset: 0, positional: [] };
+  if (command !== "list" && command !== "message" && command !== "create") throw new Error(`Unknown command: ${command}\n${USAGE}`);
+  const options: Options = { command, json: false, limit: 50, offset: 0, own: false, create: {}, positional: [] };
   const seen = new Set<string>();
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -31,10 +36,12 @@ function parse(argv: string[]): Options | null {
     if (seen.has(arg)) throw new Error(`Repeated option: ${arg}`);
     seen.add(arg);
     if (arg === "--json") { options.json = true; continue; }
-    if (!((command === "list" && ["--limit", "--offset"].includes(arg)) || (command === "message" && arg === "--thread"))) throw new Error(`Unknown option: ${arg}`);
+    if (command === "create" && arg === "--own") { options.own = true; continue; }
+    if (!((command === "list" && ["--limit", "--offset"].includes(arg)) || (command === "message" && arg === "--thread") || (command === "create" && Object.hasOwn(CREATE_OPTIONS, arg)))) throw new Error(`Unknown option: ${arg}`);
     const value = argv[++i];
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
-    if (arg === "--thread") options.threadId = value;
+    if (command === "create") options.create[CREATE_OPTIONS[arg]!] = value;
+    else if (arg === "--thread") options.threadId = value;
     else {
       if (!/^\d+$/.test(value)) throw new Error(`${arg} must be an integer`);
       const number = Number(value);
@@ -44,6 +51,7 @@ function parse(argv: string[]): Options | null {
   }
   if (command === "list" && options.positional.length) throw new Error(`Unexpected list arguments\n${USAGE}`);
   if (command === "message" && options.positional.length !== 2) throw new Error(`Supply one bot and one quoted message\n${USAGE}`);
+  if (command === "create" && options.positional.length !== 1) throw new Error(`Supply one quoted bot name\n${USAGE}`);
   return options;
 }
 
@@ -54,6 +62,12 @@ function recipient(bots: BotMetadata[], selector: string) {
   if (matches.length > 1) throw new Error("Several bots have that name. Use an exact bot ID from bb bots list.");
   if (!matches.length) throw new Error("Bot not found. Use bb bots list for IDs and exact names.");
   return matches[0]!;
+}
+
+export function createdBotSummary(bot: BotMetadata, store: Pick<BotStore, "ownedProjects">) {
+  const owned = new Set(store.ownedProjects(bot.id));
+  return { botId: bot.id, name: bot.name, role: bot.role, hostId: bot.hostId,
+    ownedProjectIds: [...owned], joinedProjectIds: bot.linkedProjectIds.filter((id) => !owned.has(id)) };
 }
 
 type Sender = { threadId: string; bot: BotMetadata | null } | null;
@@ -79,12 +93,13 @@ export function frameBotMessage(sender: Sender, message: string): string {
   ].join("\n");
 }
 
-export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: (threadId: string, persist?: boolean) => Promise<string | null>) {
+export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: (threadId: string, persist?: boolean) => Promise<string | null>, createBot: (request: BotCreateRequest) => Promise<BotMetadata>) {
   bb.cli.register({
-    name: "bots", summary: "List bots and send attributed asynchronous messages to their conversations",
+    name: "bots", summary: "List and create bots, and send attributed asynchronous messages to their conversations",
     commands: [
       { name: "list", summary: "List bot IDs, activity, visibility, and owned/joined project names without private state", usage: "bb bots list [--json] [--limit 1-100] [--offset N]" },
       { name: "message", summary: "Message a bot's first conversation, or reply to one of its conversations; queues while busy", usage: "bb bots message <bot-id-or-exact-name> <message> [--thread <conversation-id>] [--json]" },
+      { name: "create", summary: "Create a bot with a name, role, SOUL identity, and optional project to join or own", usage: "bb bots create <name> [--role <role>] [--soul <identity>] [--project <project-id> [--own]] [--host <host-id>] [--json]" },
     ],
     async run(argv, ctx) {
       try {
@@ -113,6 +128,16 @@ export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: 
             ...(nextOffset !== null ? [`More bots: bb bots list --offset ${nextOffset} --limit ${options.limit}`] : []),
             `${bots.length} shown; ${all.length} total.`,
             'Message: bb bots message <bot-id> "Your message"',
+          ].join("\n") };
+        }
+        if (options.command === "create") {
+          const parsed = botCreateRequestSchema.safeParse({ name: options.positional[0], ...options.create, own: options.own });
+          if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`).join("; "));
+          const summary = createdBotSummary(await createBot(parsed.data), store);
+          return { exitCode: 0, stdout: options.json ? JSON.stringify(summary) : [
+            `Created ${printable(summary.name)} (${summary.botId}).`,
+            summary.ownedProjectIds.length ? `Owns project ${summary.ownedProjectIds.join(", ")}.` : summary.joinedProjectIds.length ? `Joined project ${summary.joinedProjectIds.join(", ")}.` : "No linked projects.",
+            "It has no conversations yet. Start one with the bot's + in the sidebar.",
           ].join("\n") };
         }
         const [selector, raw] = options.positional as [string, string];

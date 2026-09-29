@@ -34,7 +34,7 @@ it("preserves migrated bindings and inheritance for historical bots-origin threa
   expect(host.store.owner(legacy.id)).toBe(member.id); expect(host.store.owner(child.id)).toBe(member.id);
   const config = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: legacy.id }, project: { id: "project" } }));
   expect(config.instructions).toContain("You are Historical bot.");
-  expect(config.tools.map(tool => tool.name)).toEqual(["bot_read_state", "bot_update_state"]);
+  expect(config.tools.map(tool => tool.name)).toEqual(["bot_read_state", "bot_update_state", "bot_create"]);
 });
 
 it("does not trust another plugin named bots as a new explicit start", async () => {

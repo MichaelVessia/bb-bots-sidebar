@@ -63,7 +63,7 @@ describe("private bot identities", () => {
     expect(host.initialConfigurations[0]?.instructions).not.toContain("You are Nova.");
     expect(host.initialConfigurations[1]?.instructions).toContain("You are Nova.");
     expect(host.initialConfigurations[0]?.instructions).not.toContain(host.stateDirectory(first.id));
-    expect(host.initialConfigurations[0]?.tools).toEqual(["bot_read_state", "bot_update_state"]);
+    expect(host.initialConfigurations[0]?.tools).toEqual(["bot_read_state", "bot_update_state", "bot_create"]);
     const bindings = (await host.harness.behavior.callRpc("bots_list", null) as { threadBindings: unknown[] }).threadBindings;
     expect(bindings).toEqual(expect.arrayContaining([{ threadId: a.threadId, botId: first.id }, { threadId: b.threadId, botId: second.id }]));
     const submitted = host.harness.inspection.sdk.callsTo("threads.spawn")[0]![0] as { input: unknown[]; environment: unknown; executionInputSources: unknown };

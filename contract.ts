@@ -47,6 +47,20 @@ export type ProjectOwner = z.infer<typeof projectOwnerSchema>;
 const settingsObjectSchema = z.record(z.string(), z.json()).refine((value) => `${JSON.stringify(value, null, 2)}\n`.length <= 16384, "settings.json is too large");
 const memoryInputSchema = z.string().max(MEMORY_MAX_CHARS, MEMORY_LIMIT_ERROR);
 const editFields = { name: z.string().trim().min(1).max(120), role: z.string().trim().max(80), avatar: avatarSchema, sectionId: id.nullable(), linkedProjectIds: z.array(id).max(100), ownedProjectIds: z.array(id).max(100).optional(), soul: z.string().max(4096), memory: memoryInputSchema.optional(), settings: settingsObjectSchema.optional() };
+// Agent and CLI creation. The server fills appearance and machine like a new editor draft.
+export const botCreateRequestSchema = z.object({
+  name: editFields.name, role: editFields.role.default(""), soul: editFields.soul.default(""),
+  projectId: id.optional(), own: z.boolean().default(false), hostId: id.optional(),
+}).strict().refine((value) => !value.own || value.projectId, "Owning requires a project ID");
+export type BotCreateRequest = z.infer<typeof botCreateRequestSchema>;
+export const botCreateToolSchema = z.object({
+  name: editFields.name.describe("Bot display name."),
+  role: editFields.role.nullish().describe("Short role or title. Optional."),
+  soul: editFields.soul.nullish().describe("SOUL.md identity and instructions, max 4096 characters. Optional."),
+  projectId: id.nullish().describe("Work project ID for the bot to join. Optional."),
+  own: z.boolean().nullish().describe("Also claim ownership of projectId so new project threads default to this bot. Only when requested."),
+  hostId: id.nullish().describe("Execution machine ID. Optional; defaults to the first connected machine."),
+}).strict();
 const stateOutput = z.object({ botId: id, file: stateFileSchema, content: z.string(), sha256: z.string() }).strict();
 export const stateUpdateSchema = z.object({ file: stateFileSchema, content: z.string(), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().superRefine((value, ctx) => {
   const limit = value.file === "MEMORY.md" ? MEMORY_MAX_CHARS : value.file === "SOUL.md" ? 4096 : 16384;

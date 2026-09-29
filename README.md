@@ -274,7 +274,10 @@ bb bots list
 bb bots list --json --limit 50 --offset 0
 bb bots message <bot-id-or-exact-name> "Please review the changes"
 bb bots message <bot-id> "My reply" --thread <sender-conversation-id>
+bb bots create "Release captain" --role "Release manager" --soul "You own releases." --project <project-id> --own
 ```
+
+`bb bots create` (and the matching `bot_create` agent tool in bot conversations) uses the editor's create path: random appearance, the first connected machine unless `--host` is given, and the Main section. `--project` joins an existing work project; `--own` also claims it and fails if another bot owns it. The new bot starts with no conversations. Output shows only public metadata.
 
 Messages use BB's native queue: idle conversations start a turn, busy conversations receive the message later. The default destination is the recipient's first visible ordered conversation; `--thread` must belong to that bot. Messages identify the invoking conversation and its bound bot, clearly distinguish agent coordination from user instructions, and include an asynchronous reply command. FYI messages need no acknowledgement. Unbound conversations and external CLI callers are labeled accurately. The CLI does not create conversations or change membership, bindings, permissions, or private state.
 

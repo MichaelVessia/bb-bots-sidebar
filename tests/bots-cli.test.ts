@@ -182,3 +182,45 @@ it("keeps the actual message before delivery guidance and escapes bot names in i
   expect(framed).toContain("    bb bots message");
   expect(framed).toContain("--thread '");
 });
+describe("bot creation", () => {
+  it("creates an owning bot through the editor path with public output only", async () => {
+    const { host, run } = await setup();
+    const result = await run(["create", "Release captain", "--role", "Releases", "--soul", "You own releases.", "--project", "project", "--own", "--json"]);
+    expect(result.exitCode).toBe(0);
+    const summary = JSON.parse(result.stdout!);
+    expect(summary).toEqual({ botId: expect.stringMatching(/^bot_[a-f0-9]{32}$/), name: "Release captain", role: "Releases", hostId: "host-home", ownedProjectIds: ["project"], joinedProjectIds: [] });
+    const bot = host.store.require(summary.botId);
+    expect(bot).toMatchObject({ soul: "You own releases.", sectionId: null, linkedProjectIds: ["project"], stateReady: true });
+    expect(host.store.projectOwner("project")?.botId).toBe(bot.id);
+    expect(result.stdout).not.toContain("You own releases.");
+  });
+  it("joins without owning by default and names the new bot in plain output", async () => {
+    const { host, run } = await setup();
+    const result = await run(["create", "Scout", "--project", "project"]);
+    expect(result.stdout).toContain("Created Scout (bot_");
+    expect(result.stdout).toContain("Joined project project.");
+    expect(host.store.projectOwner("project")).toBeUndefined();
+    expect(host.store.list().find((bot) => bot.name === "Scout")).toMatchObject({ role: "", soul: "", linkedProjectIds: ["project"] });
+  });
+  it("rejects invalid requests without creating a bot", async () => {
+    const { host, a, run } = await setup();
+    host.store.changeProjectRole(a.id, "project", "own");
+    const count = host.store.list().length;
+    expect((await run(["create", "Nobody", "--own"])).stderr).toContain("Owning requires a project ID");
+    expect((await run(["create", "Nobody", "--project", "missing"])).stderr).toContain("Link an existing work project");
+    expect((await run(["create", "Nobody", "--project", "project", "--own"])).stderr).toContain("already owned by Atlas");
+    expect((await run(["create", "Nobody", "--soul", "x".repeat(4097)])).exitCode).toBe(1);
+    expect((await run(["create"])).stderr).toContain("Supply one quoted bot name");
+    expect((await run(["create", "Nobody", "--thread", "x"])).stderr).toContain("Unknown option");
+    expect(host.store.list()).toHaveLength(count);
+  });
+  it("offers bot_create to bot conversations and accepts null optional fields", async () => {
+    const { host, a } = await setup();
+    const config = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: a.id }, project: { id: "project", kind: "standard" } }));
+    expect(config.tools.map((tool) => tool.name)).toContain("bot_create");
+    expect(BOT_GUIDANCE).toContain("bb bots create");
+    const result = JSON.parse(String(await host.harness.behavior.callAgentTool("bot_create", { name: "Helper", role: null, soul: "Help.", projectId: null, own: null, hostId: null }, { threadId: a.id, projectId: "project" })));
+    expect(result).toMatchObject({ name: "Helper", role: "", ownedProjectIds: [], joinedProjectIds: [] });
+    expect(host.store.require(result.botId).soul).toBe("Help.");
+  });
+});

@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
-import { rpcContract, stateReadSchema, stateMutationSchema, stateMutationToolSchema, stateMutationResultSchema, normalizeStateMutation, type BotMetadata, type BotStateMutation } from "./contract";
+import { rpcContract, stateReadSchema, stateMutationSchema, stateMutationToolSchema, stateMutationResultSchema, normalizeStateMutation, botCreateRequestSchema, botCreateToolSchema, type BotCreateRequest, type BotMetadata, type BotStateMutation } from "./contract";
 import { createBotStore, EMPTY_HASHES, nextTimestamp } from "./lib/bot-store";
 import { applyState, BotStateConflictError, createPrivateBotState, stateContent } from "./lib/private-state";
 import { memoryFacts, mutateStateDocument } from "./lib/state-actions";
 import { createLegacyImporter } from "./lib/migrate-bots";
 import { browseProjectDirectory, createWorkProject } from "./lib/project-creation";
-import { registerBotsCli } from "./lib/bots-cli";
+import { createdBotSummary, registerBotsCli } from "./lib/bots-cli";
+import { randomAvatar } from "./lib/appearance";
 import { registerBotMentions } from "./lib/bot-mentions";
 import { listBotConversations } from "./lib/bot-conversations";
 import { botProjectContext } from "./lib/project-context";
@@ -111,6 +112,27 @@ export default async function plugin(bb: BbPluginApi) {
       }, ownedProjectIds);
       await state.mirror(next); publish(); return next;
     }));
+  }
+  function createBot({ name, role, hostId, avatar, sectionId, linkedProjectIds, ownedProjectIds, soul, memory, settings }: z.infer<typeof rpcContract.bot_create.input>) {
+    return serial("registry", async () => {
+      await importLegacy(); await validateLinks(linkedProjectIds); if (ownedProjectIds) await validateLinks(ownedProjectIds); validateSection(sectionId);
+      if (!(await bb.sdk.hosts.list()).some((host) => host.id === hostId)) throw new Error("Choose an enrolled execution machine");
+      const id = `bot_${randomUUID().replaceAll("-", "")}`;
+      let created: BotMetadata = { id, name, role, hostId, stateReady: true, legacyHomeProjectId: null, avatar, sectionId, linkedProjectIds, soul, agents: "", memory: "", settings: {}, stateHashes: { ...EMPTY_HASHES }, order: store.list().length, mainThreadId: null, hiddenUntilActivity: false, hiddenAt: null, updatedAt: Date.now(), legacyProjectId: null };
+      if (memory !== undefined) created = applyState(created, "MEMORY.md", memory);
+      if (settings !== undefined) created = applyState(created, "settings.json", stateContent({ ...created, settings }, "settings.json"));
+      store.saveWithProjects(created, ownedProjectIds);
+      const ready = await state.prepare(id); publish(); return ready;
+    });
+  }
+  // Agents and the CLI take the editor's create path with the defaults a new
+  // draft would have: random appearance, first connected machine, Main section.
+  async function createBotFromRequest({ name, role, soul, projectId, own, hostId }: BotCreateRequest) {
+    const hosts = await bb.sdk.hosts.list();
+    const machine = hostId ?? (hosts.find((host) => host.status === "connected") ?? hosts[0])?.id;
+    if (!machine) throw new Error("No enrolled execution machine is available");
+    const projects = projectId ? [projectId] : [];
+    return createBot({ name, role, soul, hostId: machine, avatar: randomAvatar(), sectionId: null, linkedProjectIds: projects, ownedProjectIds: own ? projects : [] });
   }
   async function updateProjectRole(botId: string, action: "join" | "leave" | "own" | "release", projectId: string) {
     return serial("registry", () => serial(botId, async () => {
@@ -216,7 +238,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.configure((ctx) => {
     const botId = contextOwner(ctx);
     const bot = botId ? store.get(botId) : null;
-    return bot ? { tools: ["bot_read_state", "bot_update_state"], skills: [], instructions: botInstructions(bot, botProjectContext(bot, ctx.project, store)) } : { tools: [], skills: [] };
+    return bot ? { tools: ["bot_read_state", "bot_update_state", "bot_create"], skills: [], instructions: botInstructions(bot, botProjectContext(bot, ctx.project, store)) } : { tools: [], skills: [] };
   });
   bb.agents.registerTool({
     name: "bot_read_state", description: "Read this bot's embedded identity and revision, memory facts, settings, or linked/available projects. Supply only target: identity, memory, settings, or project. State is managed privately by BB and is independent of the current machine or working directory.",
@@ -237,6 +259,11 @@ export default async function plugin(bb: BbPluginApi) {
       return JSON.stringify(await applyBotState(botId, stateMutationSchema.parse(normalizeStateMutation(change))));
     },
   });
+  bb.agents.registerTool({
+    name: "bot_create", description: "Create a new bot when the user asks for one. Supply name, and optionally role, soul (SOUL.md identity), projectId to join, own to also claim that project, and hostId. Appearance is random and the machine defaults to the first connected one. The new bot has no conversations yet. Same as bb bots create.",
+    parameters: botCreateToolSchema,
+    execute: async (input) => JSON.stringify(createdBotSummary(await createBotFromRequest(botCreateRequestSchema.parse(normalizeStateMutation(input))), store)),
+  });
   bb.experimental_hooks.on("message.dispatch", async (ctx) => {
     for (const block of ctx.input.blocks) {
       if (block.type !== "text" || block.visibility !== "agent-only") continue;
@@ -253,7 +280,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.created", async ({ thread }) => { await routeNewThread(thread, true); });
 
-  registerBotsCli(bb, store, resolveOwner);
+  registerBotsCli(bb, store, resolveOwner, createBotFromRequest);
   registerBotMentions(bb, store);
 
   bb.rpc.register(rpcContract, {
@@ -270,16 +297,7 @@ export default async function plugin(bb: BbPluginApi) {
       const legacyHomes = new Set(bots.map((bot) => bot.legacyHomeProjectId));
       return { bots, projectOwners: store.projectOwners().map(({ projectId, botId }) => ({ projectId, botId })), warnings: [...warnings, ...state.warnings()], personalProjectId: personalId, threadBindings: store.bindings(), sections: store.sections(), hosts: hosts.map((host) => ({ id: host.id, name: host.name, connected: host.status === "connected" })), projects: projects.filter((project) => project.kind === "standard" && !legacyHomes.has(project.id)).map((project) => ({ id: project.id, name: project.name })) };
     },
-    bot_create: ({ name, role, hostId, avatar, sectionId, linkedProjectIds, ownedProjectIds, soul, memory, settings }) => serial("registry", async () => {
-      await importLegacy(); await validateLinks(linkedProjectIds); if (ownedProjectIds) await validateLinks(ownedProjectIds); validateSection(sectionId);
-      if (!(await bb.sdk.hosts.list()).some((host) => host.id === hostId)) throw new Error("Choose an enrolled execution machine");
-      const id = `bot_${randomUUID().replaceAll("-", "")}`;
-      let created: BotMetadata = { id, name, role, hostId, stateReady: true, legacyHomeProjectId: null, avatar, sectionId, linkedProjectIds, soul, agents: "", memory: "", settings: {}, stateHashes: { ...EMPTY_HASHES }, order: store.list().length, mainThreadId: null, hiddenUntilActivity: false, hiddenAt: null, updatedAt: Date.now(), legacyProjectId: null };
-      if (memory !== undefined) created = applyState(created, "MEMORY.md", memory);
-      if (settings !== undefined) created = applyState(created, "settings.json", stateContent({ ...created, settings }, "settings.json"));
-      store.saveWithProjects(created, ownedProjectIds);
-      const ready = await state.prepare(id); publish(); return ready;
-    }),
+    bot_create: createBot,
     bot_prepare: ({ botId }) => serial(botId, () => state.prepare(botId)),
     bot_update: saveBotIdentity,
     bots_reorder: ({ bots: placements }) => serial("registry", async () => {
