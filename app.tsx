@@ -55,6 +55,7 @@ import { AvatarAppearance } from "./components/avatar-appearance";
 import { BotIcon } from "./components/bot-icon";
 import { SidebarBotIcon } from "./components/sidebar-bot-icon";
 import { MEMORY_MAX_CHARS } from "./lib/memory-limit";
+import { WorkPanel, WorkSidebarAccessory } from "./components/work-panel";
 import "./style.css";
 
 const MENU_ITEM_CLASS = "bot-menu-item cursor-default select-none rounded-sm px-2 py-1.5 text-xs outline-none data-[disabled]:opacity-40";
@@ -929,5 +930,13 @@ export default definePluginApp((app) => {
     title: "Bots Sidebar",
     description: "Independent bots with their conversation trees and unassigned chats.",
     component: BotsSidebar,
+  });
+  app.slots.navPanel({
+    id: "work",
+    title: "Work",
+    icon: "list-todo",
+    path: "work",
+    component: WorkPanel,
+    experimental_sidebarAccessory: WorkSidebarAccessory,
   });
 });

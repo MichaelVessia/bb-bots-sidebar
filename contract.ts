@@ -4,6 +4,7 @@ import { AVATAR_EXPRESSION_IDS, AVATAR_MOTION_IDS, AVATAR_SHAPE_IDS } from "./li
 import { newThreadRequestSchema } from "./lib/new-thread-request";
 
 import { MEMORY_MAX_CHARS, MEMORY_LIMIT_ERROR } from "./lib/memory-limit";
+import { isSafeTaskLink, TASK_LINK_MAX_CHARS } from "./lib/task-links";
 
 const id = z.string().min(1);
 export const avatarSchema = z.object({
@@ -98,6 +99,28 @@ export const stateMutationToolSchema = z.object({
 });
 export const stateMutationResultSchema = z.object({ botId: id, target: stateTargetSchema, changed: z.boolean(), revision: z.number(), state: z.json() }).strict();
 
+// Work tasks: explicit, ID-keyed status records. Thread state stays live data;
+// a task's status, outcome, and next step change only through explicit updates.
+export const TASK_STATUSES = ["now", "waiting", "done"] as const;
+export const TASKS_CHANGED = "bot-tasks-changed";
+export const TASK_LIMIT = 1000;
+const printableText = (max: number, singleLine = false, min = 0) => z.string().trim().min(min).max(max)
+  .refine((value) => !(singleLine ? /[\x00-\x1f\x7f]/ : /[\x00-\x09\x0b-\x1f\x7f]/).test(value), singleLine ? "Use a single line without control characters" : "Remove control characters");
+export const taskLinkSchema = z.string().trim().refine(isSafeTaskLink, `Links must be https URLs without credentials, up to ${TASK_LINK_MAX_CHARS} characters`);
+export const taskSchema = z.object({
+  id: z.string().regex(/^task_[a-f0-9]{32}$/), title: printableText(200, true, 1), status: z.enum(TASK_STATUSES),
+  botId: id, threadId: id.nullable(), links: z.array(taskLinkSchema).max(5),
+  nextStep: printableText(500), outcome: printableText(1000),
+  createdAt: z.number(), updatedAt: z.number(), updatedByThreadId: id.nullable(),
+}).strict().superRefine((task, ctx) => {
+  if (task.status !== "done" && !task.nextStep) ctx.addIssue({ code: "custom", path: ["nextStep"], message: "Now and Waiting tasks need a next step" });
+  if (task.status === "done" && !task.outcome) ctx.addIssue({ code: "custom", path: ["outcome"], message: "Done tasks need an outcome" });
+});
+export type BotTask = z.infer<typeof taskSchema>;
+export type TaskStatus = BotTask["status"];
+export const taskBotSchema = z.object({ id, name: z.string(), role: z.string(), avatar: avatarSchema }).strict();
+export type TaskBot = z.infer<typeof taskBotSchema>;
+
 export const rpcContract = defineRpcContract({
   bots_list: { input: z.null(), output: z.object({ bots: z.array(metadataSchema), hosts: z.array(hostSchema), sections: z.array(sectionSchema), projects: z.array(projectSchema), threadBindings: z.array(z.object({ threadId: id, botId: id }).strict()), warnings: z.array(z.string()), personalProjectId: id, projectOwners: z.array(projectOwnerSchema).optional() }).strict() },
   project_browse: { input: projectBrowseInputSchema, output: projectBrowseOutputSchema },
@@ -119,4 +142,6 @@ export const rpcContract = defineRpcContract({
   state_read: { input: z.object({ botId: id, file: stateFileSchema }).strict(), output: stateOutput },
   state_update: { input: stateUpdateSchema.safeExtend({ botId: id }), output: stateOutput },
   state_apply: { input: z.object({ botId: id, change: stateMutationSchema }).strict(), output: stateMutationResultSchema },
+  // Public bot fields only: the Work view never receives SOUL, memory, or settings.
+  tasks_list: { input: z.null(), output: z.object({ tasks: z.array(taskSchema), bots: z.array(taskBotSchema) }).strict() },
 });

@@ -129,6 +129,42 @@ Unused optional tool fields may be omitted or null. Shared memory, routines,
 channels, and scheduled skills are deliberately out of scope. Never store secrets
 in bot state.
 
+## Work view
+
+**Work** is a BB navigation page (`/plugins/bots-sidebar/work`) with three lists:
+**Now**, **Waiting on Michael**, and **Done**. Its sidebar row shows the Waiting
+count. Each task shows its title, owner bot, linked BB thread with that thread's
+live status icon, PR/issue links, last update time, next step, and last result or
+outcome. Click the thread to open it; PR/issue links open externally. Done shows
+the 20 most recent tasks.
+
+Tasks are small, explicit records in the plugin's SQLite database, keyed by
+`task_<id>`. Live thread state (working, waiting, error) is never copied into a
+task, and a task's status never changes because a thread went idle. Agents write
+the record when work starts, needs Michael, or finishes:
+
+```sh
+# Create (prints the task ID). Owner and thread default to the invoking bot conversation.
+bb bots task set --title "Move CI off legacy runners" --status now \
+  --next "Wait for the staging deploy" --link https://github.com/acme/ci/pull/130
+# An orchestrator can create a task for a worker explicitly.
+bb bots task set --title "Runner audit" --status now --next "Scan 148 repos" \
+  --bot <bot-id-or-exact-name> --thread <worker-conversation-id>
+# Update selected fields.
+bb bots task set <task-id> --status waiting --next "Approve the prod deploy" --outcome "Staging passed"
+bb bots task set <task-id> --status done --outcome "Merged; prod deploy passed"
+bb bots task list [--status now|waiting|done] [--bot <bot>] [--thread <id>] [--json]
+bb bots task remove <task-id>
+```
+
+Validation: titles are one line (200 characters); Now/Waiting need `--next`
+(500); Done needs `--outcome` (1,000). Links are at most five credential-free
+`https` URLs; repeating `--link` replaces the list and `--link none` clears it.
+Threads must exist; `--thread none` unlinks. Callers outside a bot conversation
+must pass `--bot`. The store holds at most 1,000 tasks. The Work page receives only
+public bot fields (name, role, avatar), never SOUL, memory, or settings. It refreshes
+on a realtime change signal, not by polling.
+
 ## Sidebar interactions
 
 - Click a bot to open the **first conversation in its list**, without expanding

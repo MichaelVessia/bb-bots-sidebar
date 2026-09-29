@@ -1,0 +1,106 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { backend } from "./backend-fixture";
+import { TASKS_CHANGED } from "../contract";
+import { isSafeTaskLink, taskLinkLabel } from "../lib/task-links";
+
+const hosts: Awaited<ReturnType<typeof backend>>[] = [];
+afterEach(async () => { for (const host of hosts.splice(0)) await host.harness.lifecycle.dispose(); });
+async function setup() {
+  const host = await backend(); hosts.push(host);
+  const bot = await host.create("Atlas");
+  host.threads.set("worker", makeThreadResponse({ id: "worker", projectId: "project" })); host.store.bind("worker", bot.id);
+  host.threads.set("other", makeThreadResponse({ id: "other", projectId: "project" }));
+  const run = (argv: string[], threadId?: string) => host.harness.behavior.runCli(["task", ...argv], threadId ? { threadId } : undefined);
+  const create = async (argv: string[], threadId = "worker") => {
+    const result = await run(["set", ...argv, "--json"], threadId);
+    expect(result.stderr || "").toBe("");
+    return JSON.parse(result.stdout!).task as { id: string; [key: string]: unknown };
+  };
+  const list = async () => JSON.parse((await run(["list", "--json"])).stdout!).tasks as { id: string; [key: string]: unknown }[];
+  return { host, bot, run, create, list };
+}
+
+describe("Work task records", () => {
+  it("creates a task owned by the invoking bot and linked to its conversation", async () => {
+    const { host, bot, create } = await setup();
+    const task = await create(["--title", "Move CI runners", "--status", "now", "--next", "Wait for staging deploy", "--link", "https://github.com/acme/ci/pull/130"]);
+    expect(task).toMatchObject({ status: "now", botId: bot.id, threadId: "worker", updatedByThreadId: "worker", links: ["https://github.com/acme/ci/pull/130"], outcome: "" });
+    expect(task.id).toMatch(/^task_[a-f0-9]{32}$/);
+    expect(host.harness.inspection.realtimeSignals.map((signal) => signal.channel)).toContain(TASKS_CHANGED);
+  });
+
+  it("merges explicit updates, replaces links, and requires an outcome for Done", async () => {
+    const { run, create, list } = await setup();
+    const task = await create(["--title", "Review PR", "--status", "now", "--next", "Address comments", "--link", "https://github.com/acme/app/pull/1"]);
+    const waiting = await create([task.id, "--status", "waiting", "--next", "Approve the prod deploy", "--link", "https://linear.app/acme/issue/SRE-867/runners", "--link", "https://github.com/acme/app/pull/2"]);
+    expect(waiting).toMatchObject({ title: "Review PR", status: "waiting", nextStep: "Approve the prod deploy", links: ["https://linear.app/acme/issue/SRE-867/runners", "https://github.com/acme/app/pull/2"] });
+    expect((waiting.updatedAt as number)).toBeGreaterThan(task.updatedAt as number);
+    const refused = await run(["set", task.id, "--status", "done"], "worker");
+    expect(refused.exitCode).toBe(1); expect(refused.stderr).toContain("Done tasks need an outcome");
+    expect((await list())[0]).toMatchObject({ status: "waiting" });
+    const done = await create([task.id, "--status", "done", "--outcome", "Merged; staging passed", "--link", "none"]);
+    expect(done).toMatchObject({ status: "done", outcome: "Merged; staging passed", links: [], createdAt: task.createdAt });
+  });
+
+  it("lets an unbound orchestrator assign an owner and another thread, then filters by them", async () => {
+    const { bot, run, create } = await setup();
+    const task = await create(["--title", "Audit", "--status", "now", "--next", "Scan repos", "--bot", "Atlas", "--thread", "worker"], "other");
+    expect(task).toMatchObject({ botId: bot.id, threadId: "worker", updatedByThreadId: "other" });
+    expect(JSON.parse((await run(["list", "--bot", bot.id, "--thread", "worker", "--status", "now", "--json"])).stdout!).tasks).toHaveLength(1);
+    expect(JSON.parse((await run(["list", "--status", "done", "--json"])).stdout!).tasks).toHaveLength(0);
+    const text = (await run(["list"])).stdout!;
+    expect(text).toContain(task.id); expect(text).toContain("Scan repos");
+  });
+
+  it.each([
+    [["--title", "T", "--status", "now", "--next", "N", "--link", "http://github.com/acme/app/pull/1"], "https URLs"],
+    [["--title", "T", "--status", "now", "--next", "N", "--link", "https://user:secret@example.com/"], "https URLs"],
+    [["--title", "T", "--status", "now", "--next", "N", "--link", "javascript:alert(1)"], "https URLs"],
+    [["--title", "T", "--status", "now"], "need a next step"],
+    [["--title", "T", "--status", "later", "--next", "N"], "--status must be"],
+    [["--title", "Line\nbreak", "--status", "now", "--next", "N"], "single line"],
+    [["--title", "T", "--status", "now", "--next", "N", "--thread", "missing"], "Conversation not found"],
+    [["--title", "T", "--status", "now", "--next", "N", "--bot", "Nobody"], "Bot not found"],
+    [["--status", "now", "--next", "N"], "--title and --status"],
+    [["task_00000000000000000000000000000000", "--status", "now"], "Task not found"],
+    [["--title", "T", "--status", "now", "--next", "N", "--unknown", "x"], "Unknown option"],
+    [["--title", "T", "--status", "now", "--next", "N", ...Array.from({ length: 6 }, (_, i) => ["--link", `https://example.com/${i}`]).flat()], "links"],
+  ])("rejects invalid input %j without writing a record", async (argv, message) => {
+    const { run, list } = await setup();
+    const result = await run(["set", ...argv], "worker");
+    expect(result.exitCode).toBe(1); expect(result.stderr).toContain(message);
+    expect(await list()).toEqual([]);
+  });
+
+  it("requires an explicit owner when the caller belongs to no bot", async () => {
+    const { run, list } = await setup();
+    const result = await run(["set", "--title", "T", "--status", "now", "--next", "N"], "other");
+    expect(result.exitCode).toBe(1); expect(result.stderr).toContain("--bot");
+    expect(await list()).toEqual([]);
+  });
+
+  it("serves public bot fields only, removes tasks, and survives a plugin reload", async () => {
+    const { host, bot, run, create } = await setup();
+    const kept = await create(["--title", "Keep", "--status", "waiting", "--next", "Decide"]);
+    const dropped = await create(["--title", "Drop", "--status", "now", "--next", "N"]);
+    expect((await run(["remove", dropped.id])).exitCode).toBe(0);
+    expect((await run(["remove", dropped.id])).exitCode).toBe(1);
+    await host.reload();
+    const view = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: { id: string }[]; bots: object[] };
+    expect(view.tasks.map((task) => task.id)).toEqual([kept.id]);
+    expect(view.bots).toEqual([{ id: bot.id, name: "Atlas", role: "Research", avatar: bot.avatar }]);
+    expect(JSON.stringify(view)).not.toContain("You are Atlas");
+  });
+});
+
+describe("task links", () => {
+  it("labels PRs and issues and accepts only credential-free https URLs", () => {
+    expect(taskLinkLabel("https://github.com/flocasts/flo-control/pull/130")).toEqual({ kind: "pr", label: "flo-control#130" });
+    expect(taskLinkLabel("https://github.com/acme/app/issues/7")).toEqual({ kind: "issue", label: "app#7" });
+    expect(taskLinkLabel("https://linear.app/acme/issue/sre-867/move-runners")).toEqual({ kind: "issue", label: "SRE-867" });
+    expect(taskLinkLabel("https://acme.atlassian.net/browse/AD-1107")).toEqual({ kind: "issue", label: "AD-1107" });
+    expect(taskLinkLabel("https://example.com/report")).toEqual({ kind: "link", label: "example.com" });
+    for (const bad of ["http://example.com", "https://a:b@example.com", "https://example.com/a b", `https://example.com/${"x".repeat(500)}`, "not a url"]) expect(isSafeTaskLink(bad)).toBe(false);
+  });
+});

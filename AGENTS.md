@@ -1,9 +1,12 @@
 # Independent Bots development
 
-Work on `main` in the installed Bots Sidebar source checkout. Confirm its path
-with `bb plugin list` before editing. Do not edit or reload older personal-workspace
-worktrees. Build and reload `bots-sidebar` from this checkout; verify the installed
-source before deploying. The owner requested private, ID-keyed state,
+Michael's install is a pinned managed Git source
+(`git:https://github.com/MichaelVessia/bb-bots-sidebar.git@<commit>`), not this
+checkout. Work in `~/projects/bb-bots-sidebar` on `michael/main-changes`; confirm
+the installed commit with `bb plugin source bots-sidebar` before editing. Deploy by
+pushing that branch to origin (never upstream) and installing the new commit. Do not
+`bb plugin remove` to switch source kinds, and do not edit older personal-workspace
+worktrees. The owner requested private, ID-keyed state,
 not bot-home projects or special execution directories. Explicit user-created
 work projects are allowed, but never create a backing project for bot storage.
 Keep all UX refinements intact.
@@ -64,6 +67,17 @@ existing conversation histories and track legacy home project IDs for compatibil
   project join/leave/own/release changes membership/ownership atomically, never
   project files or historical conversation bindings. Reapply semantic edits on bounded CAS
   retries, never retry stale whole-file bytes. No shared-memory scope or routines.
+
+## Work view contract
+
+- Work is one `navPanel` (Now / Waiting on Michael / Done) plus a Waiting count
+  accessory. Do not add other dashboards or change the Bots/Chats thread list for it.
+- Tasks live in `bot_tasks`, keyed `task_<hex>`, written only by explicit
+  `bb bots task set|remove`. Thread state is live data: never copy it into a task,
+  infer an outcome from an idle thread, or scrape chat text. No model calls.
+- Validate every record: https links without credentials, existing threads/bots,
+  next step for Now/Waiting, outcome for Done. The page receives only public bot
+  fields and refreshes on `bot-tasks-changed`, never by polling.
 
 # Bots sidebar UX contract
 

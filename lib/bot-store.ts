@@ -12,6 +12,7 @@ export function createBotStore(bb: BbPluginApi) {
     "CREATE TABLE bot_project_owners (project_id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE, assigned_at INTEGER NOT NULL)",
     "CREATE INDEX bot_project_owners_by_bot ON bot_project_owners(bot_id)",
     "ALTER TABLE bot_starts ADD COLUMN project_id TEXT",
+    "CREATE TABLE bot_tasks (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL)",
   ]);
   const legacySchema = metadataSchema.omit({ stateReady: true, legacyHomeProjectId: true }).extend({ homePath: z.string(), homeProjectId: z.string().nullable() }).strict();
   const raw = (id: string) => db.prepare("SELECT data FROM bots WHERE id = ?").get(id) as { data: string } | undefined;

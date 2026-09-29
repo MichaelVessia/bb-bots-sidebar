@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
-import { rpcContract, stateReadSchema, stateMutationSchema, stateMutationToolSchema, stateMutationResultSchema, normalizeStateMutation, botCreateRequestSchema, botCreateToolSchema, type BotCreateRequest, type BotMetadata, type BotStateMutation } from "./contract";
+import { rpcContract, stateReadSchema, stateMutationSchema, stateMutationToolSchema, stateMutationResultSchema, normalizeStateMutation, botCreateRequestSchema, botCreateToolSchema, TASKS_CHANGED, type BotCreateRequest, type BotMetadata, type BotStateMutation } from "./contract";
 import { createBotStore, EMPTY_HASHES, nextTimestamp } from "./lib/bot-store";
 import { applyState, BotStateConflictError, createPrivateBotState, stateContent } from "./lib/private-state";
 import { memoryFacts, mutateStateDocument } from "./lib/state-actions";
 import { createLegacyImporter } from "./lib/migrate-bots";
 import { browseProjectDirectory, createWorkProject } from "./lib/project-creation";
 import { createdBotSummary, registerBotsCli } from "./lib/bots-cli";
+import { createTaskStore } from "./lib/bot-tasks";
 import { randomAvatar } from "./lib/appearance";
 import { registerBotMentions } from "./lib/bot-mentions";
 import { listBotConversations } from "./lib/bot-conversations";
@@ -25,6 +26,8 @@ export default async function plugin(bb: BbPluginApi) {
   const store = createBotStore(bb);
   const publish = () => bb.realtime.publish(CHANGED, { updatedAt: Date.now() });
   const state = createPrivateBotState(bb, store, publish);
+  const tasks = createTaskStore(bb);
+  const publishTasks = () => bb.realtime.publish(TASKS_CHANGED, { updatedAt: Date.now() });
   const importLegacy = createLegacyImporter(bb, store);
   let personalId: string | null = null;
   const locks = new Map<string, Promise<unknown>>();
@@ -280,7 +283,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.created", async ({ thread }) => { await routeNewThread(thread, true); });
 
-  registerBotsCli(bb, store, resolveOwner, createBotFromRequest);
+  registerBotsCli(bb, store, resolveOwner, createBotFromRequest, tasks, publishTasks);
   registerBotMentions(bb, store);
 
   bb.rpc.register(rpcContract, {
@@ -407,5 +410,6 @@ export default async function plugin(bb: BbPluginApi) {
     state_read: ({ botId, file }) => serial(botId, async () => state.read(await state.prepare(botId), file)),
     state_update: ({ botId, file, content, expectedSha256 }) => serial(botId, async () => { await state.prepare(botId); return state.update(botId, file, content, expectedSha256); }),
     state_apply: ({ botId, change }) => applyBotState(botId, change),
+    tasks_list: async () => ({ tasks: tasks.list(), bots: store.list().map(({ id, name, role, avatar }) => ({ id, name, role, avatar })) }),
   });
 }

@@ -3,6 +3,7 @@ import { botCreateRequestSchema, type BotCreateRequest, type BotMetadata } from 
 import type { BotStore } from "./bot-store";
 import { listBotConversations } from "./bot-conversations";
 import { conversationRoots, orderConversations } from "./conversation-order";
+import { runTaskCommand, TASK_USAGE, type TaskStore } from "./bot-tasks";
 
 const USAGE = `bb bots list [--json] [--limit 1-100] [--offset N]
 bb bots message <bot-id-or-exact-name> <message> [--thread <conversation-id>] [--json]
@@ -15,7 +16,9 @@ Quote names/messages containing spaces. Use -- before positional values beginnin
 List output contains public bot metadata, never private state.
 Create when the user asks for a bot. --soul sets SOUL.md (max 4096 characters). --project joins a
 work project; add --own only when asked to route its new threads to the bot. Appearance is random;
-the machine defaults to the first connected one. The new bot starts with no conversations.`;
+the machine defaults to the first connected one. The new bot starts with no conversations.
+
+${TASK_USAGE}`;
 const MESSAGE_MAX_CHARS = 12000;
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const printable = (value: string) => value.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
@@ -55,7 +58,7 @@ function parse(argv: string[]): Options | null {
   return options;
 }
 
-function recipient(bots: BotMetadata[], selector: string) {
+export function recipient(bots: BotMetadata[], selector: string) {
   const byId = bots.find((bot) => bot.id === selector);
   if (byId) return byId;
   const matches = bots.filter((bot) => bot.name === selector);
@@ -93,16 +96,18 @@ export function frameBotMessage(sender: Sender, message: string): string {
   ].join("\n");
 }
 
-export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: (threadId: string, persist?: boolean) => Promise<string | null>, createBot: (request: BotCreateRequest) => Promise<BotMetadata>) {
+export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: (threadId: string, persist?: boolean) => Promise<string | null>, createBot: (request: BotCreateRequest) => Promise<BotMetadata>, tasks: TaskStore, publishTasks: () => void) {
   bb.cli.register({
     name: "bots", summary: "List and create bots, and send attributed asynchronous messages to their conversations",
     commands: [
       { name: "list", summary: "List bot IDs, activity, visibility, and owned/joined project names without private state", usage: "bb bots list [--json] [--limit 1-100] [--offset N]" },
       { name: "message", summary: "Message a bot's first conversation, or reply to one of its conversations; queues while busy", usage: "bb bots message <bot-id-or-exact-name> <message> [--thread <conversation-id>] [--json]" },
       { name: "create", summary: "Create a bot with a name, role, SOUL identity, and optional project to join or own", usage: "bb bots create <name> [--role <role>] [--soul <identity>] [--project <project-id> [--own]] [--host <host-id>] [--json]" },
+      { name: "task", summary: "List, create, update, or remove Work view task records (Now, Waiting on Michael, Done)", usage: "bb bots task list|set|remove ... (bb bots task --help)" },
     ],
     async run(argv, ctx) {
       try {
+        if (argv[0] === "task") return await runTaskCommand({ bb, store, tasks, publish: publishTasks, resolveOwner, findBot: recipient }, argv.slice(1), ctx);
         const options = parse(argv);
         if (!options) return { exitCode: 0, stdout: USAGE };
         if (options.command === "list") {
