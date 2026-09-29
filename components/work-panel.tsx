@@ -78,7 +78,8 @@ export function WorkPanel() {
   const now = useMinuteClock();
   const threads = useMemo(() => new Map(sidebar.threads.map((thread) => [thread.id, thread])), [sidebar.threads]);
   const bots = useMemo(() => new Map((data?.bots ?? []).map((bot) => [bot.id, bot])), [data]);
-  return <div className="work-panel mx-auto flex max-w-3xl flex-col gap-5 p-4">
+  // Right-panel tab (flush layout): the panel owns its padding and scrolling.
+  return <div className="work-panel flex h-full min-h-0 flex-col gap-4 overflow-y-auto p-3">
     {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
     {!data && !error ? <p className="text-sm text-muted-foreground">Loading tasks…</p> : null}
     {data ? SECTIONS.map((section) => {
@@ -86,7 +87,7 @@ export function WorkPanel() {
       const shown = section.status === "done" ? all.slice(0, DONE_SHOWN) : all;
       return <section key={section.status} aria-labelledby={`work-${section.status}`} data-work-section={section.status}>
         <h2 id={`work-${section.status}`} className="mb-2 flex items-baseline gap-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-          {section.title}<span className="tabular-nums font-normal">{all.length}</span>
+          {section.title}<span className={`tabular-nums font-normal ${section.status === "waiting" && all.length ? "text-primary" : ""}`}>{all.length}</span>
         </h2>
         {shown.length ? <ul className="space-y-2">{shown.map((task) => <TaskCard key={task.id} task={task} bot={bots.get(task.botId)} thread={task.threadId ? threads.get(task.threadId) : undefined} now={now} />)}</ul>
           : <p className="text-xs text-muted-foreground">{section.empty}</p>}
@@ -95,11 +96,4 @@ export function WorkPanel() {
     }) : null}
     <p className="border-t border-border pt-3 text-[11px] text-muted-foreground">Agents update tasks with <code>bb bots task set</code>. Thread status icons are live; task status changes only when a record is updated.</p>
   </div>;
-}
-
-// Trailing count on the Work row in BB's sidebar: tasks waiting on Michael.
-export function WorkSidebarAccessory() {
-  const { data } = useTasks();
-  const waiting = data?.tasks.filter((task) => task.status === "waiting").length ?? 0;
-  return waiting ? <span className="work-waiting-count text-[11px] tabular-nums text-primary" title={`${waiting} waiting on Michael`} aria-label={`${waiting} waiting on Michael`}>{waiting}</span> : null;
 }

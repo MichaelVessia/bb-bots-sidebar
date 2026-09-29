@@ -55,7 +55,7 @@ import { AvatarAppearance } from "./components/avatar-appearance";
 import { BotIcon } from "./components/bot-icon";
 import { SidebarBotIcon } from "./components/sidebar-bot-icon";
 import { MEMORY_MAX_CHARS } from "./lib/memory-limit";
-import { WorkPanel, WorkSidebarAccessory } from "./components/work-panel";
+import { WorkPanel } from "./components/work-panel";
 import "./style.css";
 
 const MENU_ITEM_CLASS = "bot-menu-item cursor-default select-none rounded-sm px-2 py-1.5 text-xs outline-none data-[disabled]:opacity-40";
@@ -931,12 +931,7 @@ export default definePluginApp((app) => {
     description: "Independent bots with their conversation trees and unassigned chats.",
     component: BotsSidebar,
   });
-  app.slots.navPanel({
-    id: "work",
-    title: "Work",
-    icon: "list-todo",
-    path: "work",
-    component: WorkPanel,
-    experimental_sidebarAccessory: WorkSidebarAccessory,
-  });
+  // Work opens as a right-panel tab beside a thread or the New thread screen.
+  app.slots.threadPanelAction({ id: "work", title: "Work", icon: "list-todo", layout: "flush", component: WorkPanel });
+  app.slots.experimental_newThreadPanelAction({ id: "work", title: "Work", icon: "list-todo", layout: "flush", component: WorkPanel });
 });

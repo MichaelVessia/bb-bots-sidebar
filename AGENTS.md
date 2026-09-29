@@ -71,8 +71,9 @@ existing conversation histories and track legacy home project IDs for compatibil
 
 ## Work view contract
 
-- Work is one `navPanel` (Now / Waiting on Michael / Done) plus a Waiting count
-  accessory. Do not add other dashboards or change the Bots/Chats thread list for it.
+- Work is one right-panel tab (`threadPanelAction` + `experimental_newThreadPanelAction`,
+  same `WorkPanel`, flush layout): Now / Waiting on Michael / Done, with the Waiting
+  count in the content. No nav page, other dashboards, or Bots/Chats list changes.
 - Tasks live in `bot_tasks`, keyed `task_<hex>`, written only by explicit
   `bb bots task set|remove`. Thread state is live data: never copy it into a task,
   infer an outcome from an idle thread, or scrape chat text. No model calls.

@@ -14,17 +14,21 @@ function task(id: string, status: BotTask["status"], overrides: Partial<BotTask>
   return { id: `task_${id.padEnd(32, "0")}`, title: `Task ${id}`, status, botId: bot.id, threadId: null, links: [], nextStep: status === "done" ? "" : `Next ${id}`, outcome: status === "done" ? `Outcome ${id}` : "", createdAt: NOW - 60_000, updatedAt: NOW - 5 * 60_000, updatedByThreadId: null, ...overrides };
 }
 function mount(tasks: BotTask[], threads = [thread("worker", 1, { title: "Runner audit", hasPendingInteraction: true })]) {
-  const panel = app.navPanels.find((entry) => entry.id === "work")!;
+  const panel = app.threadPanelActions.find((entry) => entry.id === "work")!;
   const view = { tasks, bots: [{ id: bot.id, name: bot.name, role: bot.role, avatar: bot.avatar }] };
-  const slot = renderSlot(panel, { subPath: "" }, { rpc: { tasks_list: () => view }, sidebarThreads: { projects: [], threads } });
+  const slot = renderSlot(panel, { threadId: "current", params: null }, { rpc: { tasks_list: () => view }, sidebarThreads: { projects: [], threads } });
   return { slot, view, panel };
 }
 
-it("registers one Work nav panel with a sidebar accessory, beside the unchanged thread list", () => {
+it("offers Work as a right-panel tab for threads and the New thread screen, not a nav page", () => {
   expect(app.threadLists.map((entry) => entry.id)).toEqual(["bot-projects"]);
-  expect(app.navPanels).toHaveLength(1);
-  expect(app.navPanels[0]).toMatchObject({ id: "work", title: "Work", path: "work" });
-  expect(app.navPanels[0]!.experimental_sidebarAccessory).toBeTypeOf("function");
+  expect(app.navPanels).toEqual([]);
+  for (const actions of [app.threadPanelActions, app.newThreadPanelActions]) {
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ id: "work", title: "Work", layout: "flush" });
+    expect(actions[0]!.run).toBeUndefined();
+  }
+  expect(app.newThreadPanelActions[0]!.component).toBe(app.threadPanelActions[0]!.component);
 });
 
 it("groups explicit task records into Now, Waiting on Michael, and Done with owner, links, update time, and next step", async () => {
@@ -73,11 +77,12 @@ it("refreshes on the task change signal only, without polling", async () => {
   expect(slot.inspection.rpcCalls.map((call) => call.method)).toEqual(["tasks_list", "tasks_list"]);
 });
 
-it("counts tasks waiting on Michael in the sidebar accessory", async () => {
-  const accessory = app.navPanels[0]!.experimental_sidebarAccessory!;
-  const view = { tasks: [task("w1", "waiting"), task("w2", "waiting"), task("n", "now")], bots: [] };
-  const slot = renderSlot({ component: accessory }, {}, { rpc: { tasks_list: () => view }, sidebarThreads: { projects: [], threads: [] } });
-  expect((await slot.findByLabelText("2 waiting on Michael")).textContent).toBe("2");
+it("keeps the Waiting count visible in the panel content and scrolls inside the tab", async () => {
+  const { slot } = mount([task("w1", "waiting"), task("w2", "waiting"), task("n", "now")]);
+  const heading = await slot.findByRole("heading", { name: /Waiting on Michael/ });
+  expect(heading.textContent).toBe("Waiting on Michael2");
+  expect(heading.querySelector(".text-primary")?.textContent).toBe("2");
+  expect(slot.container.querySelector(".work-panel")?.className).toContain("overflow-y-auto");
 });
 
 it("formats relative update times", () => {

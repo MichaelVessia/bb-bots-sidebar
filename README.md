@@ -131,12 +131,14 @@ in bot state.
 
 ## Work view
 
-**Work** is a BB navigation page (`/plugins/bots-sidebar/work`) with three lists:
-**Now**, **Waiting on Michael**, and **Done**. Its sidebar row shows the Waiting
-count. Each task shows its title, owner bot, linked BB thread with that thread's
-live status icon, PR/issue links, last update time, next step, and last result or
-outcome. Click the thread to open it; PR/issue links open externally. Done shows
-the 20 most recent tasks.
+**Work** is a right-panel tab. Beside any thread, or on the New thread screen,
+open the panel launcher and choose **Work**. BB keeps the tab with that thread or
+screen. The tab shows three lists: **Now**, **Waiting on Michael** (its count is
+highlighted), and **Done**. Each task shows its title, owner bot, linked BB thread
+with that thread's live status icon, PR/issue links, last update time, next step,
+and last result or outcome. Click the thread to open it; PR/issue links open
+externally. Done shows the 20 most recent tasks. The layout wraps at narrow widths
+and scrolls inside the tab.
 
 Tasks are small, explicit records in the plugin's SQLite database, keyed by
 `task_<id>`. Live thread state (working, waiting, error) is never copied into a
