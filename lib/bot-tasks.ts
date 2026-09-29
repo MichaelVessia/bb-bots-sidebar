@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginCliContext } from "@get-bb/plugin-sdk";
-import { TASK_LIMIT, TASK_STATUSES, taskSchema, type BotMetadata, type BotTask, type TaskStatus } from "../contract";
+import { TASK_LIMIT, TASK_STATUSES, WAITING_ON, taskSchema, type WaitingOn, type BotMetadata, type BotTask, type TaskStatus } from "../contract";
 import type { BotStore } from "./bot-store";
 import { nextTimestamp } from "./bot-store";
 
 export const TASK_USAGE = `bb bots task list [--status now|waiting|done] [--bot <bot>] [--thread <conversation-id>] [--json]
 bb bots task set [<task-id>] [--title <title>] [--status now|waiting|done] [--bot <bot>]
                  [--thread <conversation-id>|none] [--link <https-url>]... [--next <step>] [--outcome <text>]
-                 [--context <text>] [--recommendation <text>] [--option <choice>]... [--ask-thread <conversation-id>|none] [--json]
+                 [--context <text>] [--recommendation <text>] [--option <choice>]... [--ask-thread <conversation-id>|none]
+                 [--waiting-on michael|other|agent|external] [--waiting-for <who>] [--json]
 bb bots task remove <task-id> [--json]
 
 Tasks feed the Work view: Now, Waiting on Michael, and Done. Records are explicit;
@@ -21,9 +22,13 @@ For decisions, --next states exactly what Michael must decide or do. --context (
 --recommendation (1000), and up to 5 single-line --option choices appear in the task
 detail; repeated --option replaces the list and --option none clears it. The Ask action
 drafts an unsent question in --ask-thread, which defaults to the creating conversation.
-Any update clears Michael's acknowledgement of a Done result.`;
+Any update clears Michael's acknowledgement of a Done result.
+Waiting tasks name who holds the next action: --waiting-on michael, other (another person
+or team), agent, or external, plus --waiting-for with a name (120), e.g. "Mosyle administrator".
+Without --waiting-on the Work view shows the owner as not recorded, never as Michael.
+Leaving Waiting clears both fields.`;
 
-type TaskFields = Partial<Pick<BotTask, "title" | "status" | "botId" | "threadId" | "links" | "nextStep" | "outcome" | "context" | "recommendation" | "options" | "askThreadId">>;
+type TaskFields = Partial<Pick<BotTask, "title" | "status" | "botId" | "threadId" | "links" | "nextStep" | "outcome" | "context" | "recommendation" | "options" | "askThreadId" | "waitingOn" | "waitingFor">>;
 
 export function createTaskStore(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -43,12 +48,16 @@ export function createTaskStore(bb: BbPluginApi) {
         if (taskId && !current) throw new Error(`Task not found: ${taskId}. Use bb bots task list for IDs.`);
         if (!current && (db.prepare("SELECT COUNT(*) AS count FROM bot_tasks").get() as { count: number }).count >= TASK_LIMIT) throw new Error(`The Work view holds at most ${TASK_LIMIT} tasks. Remove old Done tasks with bb bots task remove.`);
         const now = Date.now();
-        const merged = taskSchema.safeParse({
+        const next = {
           id: current?.id ?? `task_${randomUUID().replaceAll("-", "")}`, threadId: null, links: [], nextStep: "", outcome: "",
           ...current, ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
           createdAt: current?.createdAt ?? now, updatedAt: current ? nextTimestamp(current.updatedAt) : now, updatedByThreadId,
           acknowledgedAt: null,
-        });
+        };
+        // A waiting owner describes Waiting only; never carry a stale one forward.
+        if (next.status !== "waiting") Object.assign(next, { waitingOn: null, waitingFor: "" });
+        else if (next.waitingOn === "michael") next.waitingFor = "";
+        const merged = taskSchema.safeParse(next);
         if (!merged.success) throw new Error(merged.error.issues.map((issue) => `${issue.path.join(".") || "task"}: ${issue.message}`).join("; "));
         const task = merged.data;
         db.prepare("INSERT INTO bot_tasks(id,data,updated_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at").run(task.id, JSON.stringify(task), task.updatedAt);
@@ -71,8 +80,8 @@ export function createTaskStore(bb: BbPluginApi) {
 }
 export type TaskStore = ReturnType<typeof createTaskStore>;
 
-type TaskOptions = { command: "list" | "set" | "remove"; json: boolean; taskId?: string; status?: TaskStatus; title?: string; bot?: string; thread?: string; links: string[]; options: string[]; next?: string; outcome?: string; context?: string; recommendation?: string; askThread?: string };
-const TEXT_OPTIONS = { "--title": "title", "--bot": "bot", "--thread": "thread", "--next": "next", "--outcome": "outcome", "--context": "context", "--recommendation": "recommendation", "--ask-thread": "askThread" } as const;
+type TaskOptions = { command: "list" | "set" | "remove"; json: boolean; taskId?: string; status?: TaskStatus; waitingOn?: WaitingOn; waitingFor?: string; title?: string; bot?: string; thread?: string; links: string[]; options: string[]; next?: string; outcome?: string; context?: string; recommendation?: string; askThread?: string };
+const TEXT_OPTIONS = { "--title": "title", "--bot": "bot", "--thread": "thread", "--next": "next", "--outcome": "outcome", "--context": "context", "--recommendation": "recommendation", "--ask-thread": "askThread", "--waiting-for": "waitingFor" } as const;
 const REPEATED = ["--link", "--option"];
 function parseTask(argv: string[]): TaskOptions | null {
   const command = argv[0];
@@ -81,7 +90,7 @@ function parseTask(argv: string[]): TaskOptions | null {
   const options: TaskOptions = { command, json: false, links: [], options: [] };
   const positional: string[] = [];
   const seen = new Set<string>();
-  const allowed = command === "list" ? ["--status", "--bot", "--thread"] : command === "set" ? [...Object.keys(TEXT_OPTIONS), "--status", ...REPEATED] : [];
+  const allowed = command === "list" ? ["--status", "--bot", "--thread"] : command === "set" ? [...Object.keys(TEXT_OPTIONS), "--status", "--waiting-on", ...REPEATED] : [];
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help") return null;
@@ -96,7 +105,10 @@ function parseTask(argv: string[]): TaskOptions | null {
     if (value === undefined || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
     if (arg === "--link") options.links.push(value);
     else if (arg === "--option") options.options.push(value);
-    else if (arg === "--status") {
+    else if (arg === "--waiting-on") {
+      if (!(WAITING_ON as readonly string[]).includes(value)) throw new Error("--waiting-on must be michael, other, agent, or external");
+      options.waitingOn = value as WaitingOn;
+    } else if (arg === "--status") {
       if (!(TASK_STATUSES as readonly string[]).includes(value)) throw new Error("--status must be now, waiting, or done");
       options.status = value as TaskStatus;
     } else options[TEXT_OPTIONS[arg as keyof typeof TEXT_OPTIONS]] = value;
@@ -163,6 +175,7 @@ export async function runTaskCommand(deps: {
     title: options.title, status: options.status, botId, threadId,
     links: options.links.length ? options.links.filter((link) => link !== "none") : undefined, nextStep: options.next, outcome: options.outcome,
     context: options.context, recommendation: options.recommendation, askThreadId,
+    waitingOn: options.waitingOn, waitingFor: options.waitingFor,
     options: options.options.length ? options.options.filter((option) => option !== "none") : undefined,
   }, ctx.threadId ?? null);
   publish();

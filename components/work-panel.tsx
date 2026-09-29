@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { UrlLink, experimental_useSidebarThreads, useBbNavigate, useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
-import { TASKS_CHANGED, type BotTask, type TaskBot, type TaskStatus, type rpcContract } from "../contract";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { TASKS_CHANGED, type BotTask, type TaskBot, type TaskStatus, type WaitingOn, type rpcContract } from "../contract";
+import { usePortalScopeProps } from "../lib/portal-scope";
 import { askQuestion, queueAskPrefill } from "../lib/ask-prefill";
 import { relativeTime } from "../lib/relative-time";
 import { taskLinkLabel } from "../lib/task-links";
@@ -11,8 +13,22 @@ import { BotIcon } from "./bot-icon";
 import { ConversationStatusIcon } from "./conversation-status-icon";
 
 type TaskView = { tasks: BotTask[]; bots: TaskBot[]; threadBots: Record<string, string> };
-type View = { kind: "list" } | { kind: "waiting" } | { kind: "task"; taskId: string; from: "list" | "waiting" };
-const STATUS_LABEL: Record<TaskStatus, string> = { now: "Now", waiting: "Waiting on Michael", done: "Done" };
+type StatusChange = { status: TaskStatus; waitingOn?: WaitingOn; waitingFor?: string; outcome?: string };
+type Preset = Pick<StatusChange, "status" | "waitingOn">;
+type View = { kind: "list" } | { kind: "waiting" } | { kind: "task"; taskId: string; from: "list" | "waiting"; preset?: Preset };
+const WAITING_LABEL: Record<WaitingOn, string> = { michael: "Michael", other: "a person or team", agent: "an agent", external: "an external party" };
+const MENU_ITEM_CLASS = "bot-menu-item cursor-default select-none rounded-sm px-2 py-1.5 text-xs outline-none data-[disabled]:opacity-40";
+const SELECT_CLASS = "h-7 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground";
+
+// An unrecorded owner stays unrecorded: it is never presented as Michael.
+export function waitingLabel(task: Pick<BotTask, "waitingOn" | "waitingFor">) {
+  if (!task.waitingOn) return "owner not recorded";
+  return task.waitingOn === "michael" ? "Michael" : task.waitingFor || WAITING_LABEL[task.waitingOn];
+}
+export function statusLabel(task: BotTask) {
+  return task.status === "now" ? "Now" : task.status === "done" ? "Done" : `Waiting on ${waitingLabel(task)}`;
+}
+const waitsOnMichael = (task: BotTask) => task.status === "waiting" && task.waitingOn === "michael";
 const DONE_SHOWN = 20;
 
 // Task records are explicit data. Refresh on the plugin's change signal and on
@@ -47,7 +63,7 @@ function useMinuteClock() {
 }
 
 // The section already says who is waiting; drop a leading "Michael:" address.
-const requestText = (task: BotTask) => task.nextStep.replace(/^michael\s*[:,-]\s*/i, "");
+const requestText = (task: BotTask) => waitsOnMichael(task) ? task.nextStep.replace(/^michael\s*[:,-]\s*/i, "") : task.nextStep;
 const primaryText = (task: BotTask) => task.status === "done" ? task.outcome : requestText(task);
 const threadTitle = (thread: PluginSidebarThread | undefined) => thread ? thread.title ?? thread.titleFallback ?? "Untitled conversation" : "Open conversation";
 
@@ -63,18 +79,42 @@ function OwnerLink({ task, bot, thread }: { task: BotTask; bot: TaskBot | undefi
     : <span className="flex min-w-0 items-center gap-1">{content}</span>;
 }
 
-type RowProps = { task: BotTask; bot: TaskBot | undefined; thread: PluginSidebarThread | undefined; now: number; onOpen: () => void; onAcknowledge?: () => void; acknowledgeLabel?: string };
-function TaskRow({ task, bot, thread, now, onOpen, onAcknowledge, acknowledgeLabel }: RowProps) {
+function StatusMenu({ task, onChange, onEdit }: { task: BotTask; onChange: (change: StatusChange) => void; onEdit: (preset: Preset) => void }) {
+  const portalScope = usePortalScopeProps();
+  const items: { label: string; disabled?: boolean; select: () => void }[] = [
+    { label: "Now", disabled: task.status === "now", select: () => onChange({ status: "now" }) },
+    { label: "Waiting on Michael", disabled: waitsOnMichael(task), select: () => onChange({ status: "waiting", waitingOn: "michael" }) },
+    { label: "Waiting on a person or team…", select: () => onEdit({ status: "waiting", waitingOn: "other" }) },
+    { label: "Waiting on an agent…", select: () => onEdit({ status: "waiting", waitingOn: "agent" }) },
+    { label: "Waiting on an external party…", select: () => onEdit({ status: "waiting", waitingOn: "external" }) },
+    { label: "Done…", disabled: task.status === "done", select: () => onEdit({ status: "done" }) },
+  ];
+  return <DropdownMenu.Root>
+    <DropdownMenu.Trigger asChild><Button type="button" variant="ghost" size="sm" className="work-status-menu h-6 shrink-0 gap-1 px-1.5 text-[11px]" aria-label={`Change status of ${task.title}. Now: ${statusLabel(task)}`}>
+      Status<svg aria-hidden="true" width="10" height="10" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m5 8 5 5 5-5" /></svg>
+    </Button></DropdownMenu.Trigger>
+    <DropdownMenu.Portal><DropdownMenu.Content {...portalScope} align="end" sideOffset={4} className="z-50 min-w-52 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+      {items.map((item) => <DropdownMenu.Item key={item.label} disabled={item.disabled} className={MENU_ITEM_CLASS} onSelect={item.select}>{item.label}</DropdownMenu.Item>)}
+    </DropdownMenu.Content></DropdownMenu.Portal>
+  </DropdownMenu.Root>;
+}
+
+type RowProps = { task: BotTask; bot: TaskBot | undefined; thread: PluginSidebarThread | undefined; now: number; onOpen: () => void; onChange: (change: StatusChange) => void; onEdit: (preset: Preset) => void; onAcknowledge?: () => void; acknowledgeLabel?: string };
+function TaskRow({ task, bot, thread, now, onOpen, onChange, onEdit, onAcknowledge, acknowledgeLabel }: RowProps) {
   return <li className="work-task border-b border-border/60 last:border-b-0" data-task-id={task.id}>
-    <button type="button" className="work-task-open block w-full rounded-md px-2 pt-2 pb-1 text-left hover:bg-state-hover" data-focus-key={task.id} aria-label={`${task.title}. ${STATUS_LABEL[task.status]}. Open details`} onClick={onOpen}>
+    <button type="button" className="work-task-open block w-full rounded-md px-2 pt-2 pb-1 text-left hover:bg-state-hover" data-focus-key={task.id} aria-label={`${task.title}. ${statusLabel(task)}. Open details`} onClick={onOpen}>
       <span className="block text-[13px] font-medium leading-5 text-foreground">{task.title}</span>
       <span className="mt-0.5 line-clamp-2 block text-xs leading-[18px] text-foreground/85">{primaryText(task)}</span>
     </button>
+    {task.status === "waiting" && !waitsOnMichael(task) ? <p className="work-waiting-on px-2 pb-1 text-[11px] text-foreground/85">Waiting on <span className={task.waitingOn ? "font-medium" : "italic text-muted-foreground"}>{waitingLabel(task)}</span></p> : null}
     <div className="flex min-w-0 items-center gap-2 px-2 pb-2 text-[11px] text-muted-foreground">
       <OwnerLink task={task} bot={bot} thread={thread} />
       <span aria-hidden="true">·</span>
       <Age at={task.updatedAt} now={now} />
-      {onAcknowledge ? <Button type="button" variant="ghost" size="sm" className="ml-auto h-6 px-2 text-[11px]" onClick={onAcknowledge}>{acknowledgeLabel}</Button> : null}
+      <span className="ml-auto flex shrink-0 items-center gap-1">
+        {onAcknowledge ? <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={onAcknowledge}>{acknowledgeLabel}</Button> : null}
+        <StatusMenu task={task} onChange={onChange} onEdit={onEdit} />
+      </span>
     </div>
   </li>;
 }
@@ -90,32 +130,86 @@ function Missing({ children }: { children: ReactNode }) {
   return <p className="text-xs text-muted-foreground">{children}</p>;
 }
 
-function TaskDetail({ task, bots, threadBots, threads, now, backLabel, onBack, onAcknowledge }: {
+// Manual progress and waiting-owner control. Native selects keep full keyboard
+// support; Save is explicit and Enter never submits.
+function StatusEditor({ task, preset, onSave }: { task: BotTask; preset?: Preset; onSave: (change: StatusChange) => Promise<void> }) {
+  const initial = { status: preset?.status ?? task.status, waitingOn: (preset?.waitingOn ?? task.waitingOn ?? "") as WaitingOn | "" };
+  const [status, setStatus] = useState<TaskStatus>(initial.status);
+  const [waitingOn, setWaitingOn] = useState<WaitingOn | "">(initial.waitingOn);
+  const [waitingFor, setWaitingFor] = useState(task.waitingFor);
+  const [outcome, setOutcome] = useState(task.outcome);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const id = `work-status-${task.id}`;
+  const needsName = status === "waiting" && Boolean(waitingOn) && waitingOn !== "michael";
+  const dirty = status !== task.status || (status === "waiting" && (waitingOn !== (task.waitingOn ?? "") || (needsName && waitingFor.trim() !== task.waitingFor))) || (status === "done" && outcome.trim() !== task.outcome);
+  const focusTarget = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
+  useEffect(() => { if (preset) focusTarget.current?.focus(); }, [preset]);
+  async function save() {
+    if (status === "waiting" && !waitingOn) { setError("Choose who this task is waiting on."); return; }
+    if (status === "done" && !outcome.trim()) { setError("Add the outcome before marking this Done."); return; }
+    setPending(true); setError(null);
+    try {
+      await onSave({ status, ...(status === "waiting" ? { waitingOn: waitingOn as WaitingOn, waitingFor: needsName ? waitingFor.trim() : "" } : {}), ...(status === "done" ? { outcome: outcome.trim() } : {}) });
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setPending(false); }
+  }
+  return <Field label="Status">
+    <form className="work-status-editor space-y-2" onSubmit={(event) => event.preventDefault()} onKeyDown={(event) => { if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="space-y-1 text-[11px] text-muted-foreground" htmlFor={`${id}-status`}>Progress
+          <select id={`${id}-status`} className={SELECT_CLASS} value={status} disabled={pending} onChange={(event) => { setStatus(event.target.value as TaskStatus); setError(null); }}>
+            <option value="now">Now</option><option value="waiting">Waiting</option><option value="done">Done</option>
+          </select>
+        </label>
+        {status === "waiting" ? <label className="space-y-1 text-[11px] text-muted-foreground" htmlFor={`${id}-on`}>Waiting on
+          <select id={`${id}-on`} className={SELECT_CLASS} value={waitingOn} disabled={pending} onChange={(event) => { setWaitingOn(event.target.value as WaitingOn | ""); setError(null); }}>
+            {!waitingOn ? <option value="" disabled>Not recorded — choose</option> : null}
+            <option value="michael">Michael</option><option value="other">A person or team</option><option value="agent">An agent</option><option value="external">An external party</option>
+          </select>
+        </label> : null}
+      </div>
+      {needsName ? <label className="block space-y-1 text-[11px] text-muted-foreground" htmlFor={`${id}-who`}>Who (optional)
+        <input ref={focusTarget} id={`${id}-who`} className={SELECT_CLASS} maxLength={120} value={waitingFor} disabled={pending} placeholder="e.g. Mosyle administrator" onChange={(event) => setWaitingFor(event.target.value)} />
+      </label> : null}
+      {status === "done" ? <label className="block space-y-1 text-[11px] text-muted-foreground" htmlFor={`${id}-outcome`}>Outcome
+        <textarea ref={focusTarget} id={`${id}-outcome`} className="min-h-16 w-full rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground" maxLength={1000} value={outcome} disabled={pending} onChange={(event) => setOutcome(event.target.value)} />
+      </label> : null}
+      {error ? <p role="alert" className="text-[11px] text-destructive">{error}</p> : null}
+      <div className="flex items-center gap-2">
+        <Button type="button" size="sm" className="h-7 px-3 text-xs" disabled={!dirty || pending} onClick={() => void save()}>{pending ? "Saving…" : "Save status"}</Button>
+        {dirty && !pending ? <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => { setStatus(task.status); setWaitingOn(task.waitingOn ?? ""); setWaitingFor(task.waitingFor); setOutcome(task.outcome); setError(null); }}>Reset</Button> : null}
+      </div>
+    </form>
+  </Field>;
+}
+
+function TaskDetail({ task, bots, threadBots, threads, now, backLabel, preset, onBack, onAcknowledge, onSetStatus }: {
   task: BotTask; bots: Map<string, TaskBot>; threadBots: Record<string, string>; threads: Map<string, PluginSidebarThread>; now: number;
-  backLabel: string; onBack: () => void; onAcknowledge: (acknowledged: boolean) => void;
+  backLabel: string; preset?: Preset; onBack: () => void; onAcknowledge: (acknowledged: boolean) => void; onSetStatus: (change: StatusChange) => Promise<void>;
 }) {
   const navigate = useBbNavigate();
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => { heading.current?.focus(); }, [task.id]);
+  useEffect(() => { if (!preset) heading.current?.focus(); }, [task.id, preset]);
   const bot = bots.get(task.botId);
   const thread = task.threadId ? threads.get(task.threadId) : undefined;
   // Existing records may predate askThreadId; the latest writer can explain them.
   const askThreadId = task.askThreadId ?? task.updatedByThreadId ?? task.threadId;
   const askBot = askThreadId ? bots.get(threadBots[askThreadId] ?? "") : undefined;
   const askName = askBot?.name ?? threadTitle(askThreadId ? threads.get(askThreadId) : undefined);
-  const noGuidance = task.status === "waiting" && !task.recommendation && !task.options.length;
+  const noGuidance = waitsOnMichael(task) && !task.recommendation && !task.options.length;
   return <article className="work-detail space-y-4" aria-labelledby={`work-detail-${task.id}`}>
     <button type="button" className="work-back -ml-1 flex items-center gap-1 rounded-sm px-1 text-xs text-muted-foreground hover:text-foreground" onClick={onBack}>
       <svg aria-hidden="true" width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m12 5-5 5 5 5" /></svg>
       {backLabel}
     </button>
     <header className="space-y-1">
-      <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><span className={task.status === "waiting" ? "font-medium text-primary" : ""}>{STATUS_LABEL[task.status]}</span><span aria-hidden="true">·</span>Updated <Age at={task.updatedAt} now={now} /></p>
+      <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><span className={task.status === "waiting" ? "font-medium text-foreground" : ""}>{statusLabel(task)}</span><span aria-hidden="true">·</span>Updated <Age at={task.updatedAt} now={now} /></p>
       <h2 id={`work-detail-${task.id}`} ref={heading} tabIndex={-1} className="text-sm font-semibold leading-5 text-foreground outline-none">{task.title}</h2>
     </header>
-    <Field label={task.status === "waiting" ? "What you need to decide or do" : task.status === "now" ? "Next step" : "Outcome"}>
+    <Field label={waitsOnMichael(task) ? "What you need to decide or do" : task.status === "waiting" ? `Next action · waiting on ${waitingLabel(task)}` : task.status === "now" ? "Next step" : "Outcome"}>
       <p className="whitespace-pre-wrap text-[13px] leading-5">{primaryText(task)}</p>
     </Field>
+    <StatusEditor key={`${task.id}:${task.updatedAt}:${preset?.status ?? ""}:${preset?.waitingOn ?? ""}`} task={task} preset={preset} onSave={onSetStatus} />
     {task.recommendation ? <Field label="Recommendation"><p className="whitespace-pre-wrap">{task.recommendation}</p></Field> : null}
     {task.options.length ? <Field label="Options"><ol className="list-decimal space-y-1 pl-4">{task.options.map((option) => <li key={option}>{option}</li>)}</ol></Field> : null}
     {noGuidance ? <Missing>No options or recommendation were recorded for this decision.</Missing> : null}
@@ -159,28 +253,42 @@ export function WorkPanel() {
     // Return keyboard focus to the row or heading that opened the detail view.
     const key = restoreFocus.current;
     if (view.kind === "task" || !key) return;
+    const target = root.current?.querySelector<HTMLElement>(`[data-focus-key="${key}"]`);
+    if (!target) return; // A moved row may render after the refresh.
     restoreFocus.current = null;
-    root.current?.querySelector<HTMLElement>(`[data-focus-key="${key}"]`)?.focus();
-  }, [view]);
+    target.focus();
+  }, [view, data]);
   const acknowledge = (taskId: string, acknowledged: boolean) => {
     setActionError(null);
     rpc.call("task_acknowledge", { taskId, acknowledged }).then(refresh, (cause) => setActionError(cause instanceof Error ? cause.message : String(cause)));
   };
-  const open = (task: BotTask, from: "list" | "waiting") => { restoreFocus.current = task.id; setView({ kind: "task", taskId: task.id, from }); };
+  const setStatus = async (taskId: string, change: StatusChange) => {
+    await rpc.call("task_set_status", { taskId, ...change });
+    refresh();
+  };
+  // Quick menu changes keep the list; focus follows the row into its new section.
+  const quickStatus = (task: BotTask, change: StatusChange) => {
+    setActionError(null); restoreFocus.current = task.id;
+    setStatus(task.id, change).catch((cause) => setActionError(cause instanceof Error ? cause.message : String(cause)));
+  };
+  const open = (task: BotTask, from: "list" | "waiting", preset?: Preset) => { restoreFocus.current = task.id; setView({ kind: "task", taskId: task.id, from, ...(preset ? { preset } : {}) }); };
   const back = () => setView(view.kind === "task" && view.from === "waiting" ? { kind: "waiting" } : { kind: "list" });
   const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && view.kind !== "list") { event.stopPropagation(); if (view.kind === "waiting") restoreFocus.current = "waiting-heading"; back(); } };
   const row = (task: BotTask, from: "list" | "waiting", acknowledgeLabel?: string) => <TaskRow key={task.id} task={task} bot={bots.get(task.botId)} thread={task.threadId ? threads.get(task.threadId) : undefined} now={now} onOpen={() => open(task, from)}
+    onChange={(change) => quickStatus(task, change)} onEdit={(preset) => open(task, from, preset)}
     {...(acknowledgeLabel ? { acknowledgeLabel, onAcknowledge: () => acknowledge(task.id, !task.acknowledgedAt) } : {})} />;
 
   let body: ReactNode = null;
   if (data) {
-    const waiting = data.tasks.filter((task) => task.status === "waiting");
+    const waiting = data.tasks.filter(waitsOnMichael);
+    const others = data.tasks.filter((task) => task.status === "waiting" && !waitsOnMichael(task));
     const active = data.tasks.filter((task) => task.status === "now");
     const done = data.tasks.filter((task) => task.status === "done" && !task.acknowledgedAt);
     const acknowledged = data.tasks.filter((task) => task.status === "done" && task.acknowledgedAt);
     const task = view.kind === "task" ? data.tasks.find((entry) => entry.id === view.taskId) : undefined;
     if (view.kind === "task") {
-      body = task ? <TaskDetail task={task} bots={bots} threadBots={data.threadBots} threads={threads} now={now} backLabel={view.from === "waiting" ? "Waiting on Michael" : "Work"} onBack={back} onAcknowledge={(value) => acknowledge(task.id, value)} />
+      body = task ? <TaskDetail task={task} bots={bots} threadBots={data.threadBots} threads={threads} now={now} backLabel={view.from === "waiting" ? "Waiting on Michael" : "Work"} preset={view.preset} onBack={back} onAcknowledge={(value) => acknowledge(task.id, value)}
+        onSetStatus={async (change) => { await setStatus(task.id, change); setView({ ...view, preset: undefined }); }} />
         : <div className="space-y-2"><Missing>This task no longer exists.</Missing><Button type="button" variant="outline" size="sm" onClick={back}>Back</Button></div>;
     } else if (view.kind === "waiting") {
       body = <section aria-labelledby="work-waiting-focused" className="space-y-2">
@@ -190,7 +298,7 @@ export function WorkPanel() {
         <h2 id="work-waiting-focused" className="text-sm font-semibold text-foreground">Waiting on Michael <span className="work-count rounded-full bg-state-active px-1.5 tabular-nums text-foreground">{waiting.length}</span></h2>
         {waiting.length ? <ul>{waiting.map((entry) => row(entry, "waiting"))}</ul> : <Missing>Nothing is waiting on you.</Missing>}
       </section>;
-    } else if (!waiting.length && !active.length && !done.length && !acknowledged.length) {
+    } else if (!waiting.length && !others.length && !active.length && !done.length && !acknowledged.length) {
       body = <Missing>No tasks yet. Agents add them with <code>bb bots task set</code>.</Missing>;
     } else {
       body = <>
@@ -204,6 +312,10 @@ export function WorkPanel() {
         {active.length ? <section aria-labelledby="work-now" data-work-section="now">
           <h2 id="work-now" className="mb-1 flex items-center gap-2 px-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Now<span className="tabular-nums font-normal">{active.length}</span></h2>
           <ul>{active.map((entry) => row(entry, "list"))}</ul>
+        </section> : null}
+        {others.length ? <section aria-labelledby="work-others" data-work-section="others">
+          <h2 id="work-others" className="mb-1 flex items-center gap-2 px-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Waiting on others<span className="tabular-nums font-normal">{others.length}</span></h2>
+          <ul>{others.map((entry) => row(entry, "list"))}</ul>
         </section> : null}
         {done.length || acknowledged.length ? <section aria-labelledby="work-done" data-work-section="done">
           <h2 id="work-done"><button type="button" aria-expanded={doneOpen} aria-controls="work-done-list" className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => setDoneOpen((value) => !value)}>

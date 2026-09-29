@@ -102,6 +102,9 @@ export const stateMutationResultSchema = z.object({ botId: id, target: stateTarg
 // Work tasks: explicit, ID-keyed status records. Thread state stays live data;
 // a task's status, outcome, and next step change only through explicit updates.
 export const TASK_STATUSES = ["now", "waiting", "done"] as const;
+// Who holds the next action of a Waiting task. null means not recorded (older
+// records); it must never be shown as Michael.
+export const WAITING_ON = ["michael", "other", "agent", "external"] as const;
 export const TASKS_CHANGED = "bot-tasks-changed";
 export const TASK_LIMIT = 1000;
 const printableText = (max: number, singleLine = false, min = 0) => z.string().trim().min(min).max(max)
@@ -118,6 +121,8 @@ export const taskSchema = z.object({
   askThreadId: id.nullable().default(null),
   // Set when Michael has read a Done result; any explicit update clears it.
   acknowledgedAt: z.number().nullable().default(null),
+  // Waiting only: the store clears both when a task leaves Waiting.
+  waitingOn: z.enum(WAITING_ON).nullable().default(null), waitingFor: printableText(120, true).default(""),
   createdAt: z.number(), updatedAt: z.number(), updatedByThreadId: id.nullable(),
 }).strict().superRefine((task, ctx) => {
   if (task.status !== "done" && !task.nextStep) ctx.addIssue({ code: "custom", path: ["nextStep"], message: "Now and Waiting tasks need a next step" });
@@ -125,6 +130,7 @@ export const taskSchema = z.object({
 });
 export type BotTask = z.infer<typeof taskSchema>;
 export type TaskStatus = BotTask["status"];
+export type WaitingOn = (typeof WAITING_ON)[number];
 export const taskBotSchema = z.object({ id, name: z.string(), role: z.string(), avatar: avatarSchema }).strict();
 export type TaskBot = z.infer<typeof taskBotSchema>;
 
@@ -152,5 +158,10 @@ export const rpcContract = defineRpcContract({
   // Public bot fields only: the Work view never receives SOUL, memory, or settings.
   // threadBots maps task-linked conversations to their bots for labels only.
   tasks_list: { input: z.null(), output: z.object({ tasks: z.array(taskSchema), bots: z.array(taskBotSchema), threadBots: z.record(id, id) }).strict() },
+  // Michael's manual status/owner change from the panel. Waiting needs an owner.
+  task_set_status: { input: z.object({
+    taskId: z.string().regex(/^task_[a-f0-9]{32}$/), status: z.enum(TASK_STATUSES), waitingOn: z.enum(WAITING_ON).optional(),
+    waitingFor: printableText(120, true).optional(), outcome: printableText(1000).optional(),
+  }).strict().refine((value) => value.status !== "waiting" || value.waitingOn, "Choose who the task is waiting on"), output: taskSchema },
   task_acknowledge: { input: z.object({ taskId: z.string().regex(/^task_[a-f0-9]{32}$/), acknowledged: z.boolean() }).strict(), output: taskSchema },
 });

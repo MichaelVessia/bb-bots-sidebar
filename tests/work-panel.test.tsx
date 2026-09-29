@@ -17,15 +17,18 @@ function task(id: string, status: BotTask["status"], overrides: Partial<BotTask>
     id: `task_${id.padEnd(32, "0")}`, title: `Task ${id}`, status, botId: bot.id, threadId: null, links: [],
     nextStep: status === "done" ? "" : `Next ${id}`, outcome: status === "done" ? `Outcome ${id}` : "",
     context: "", recommendation: "", options: [], askThreadId: null, acknowledgedAt: null,
+    waitingOn: status === "waiting" ? "michael" : null, waitingFor: "",
     createdAt: NOW - 60_000, updatedAt: NOW - 5 * 60_000, updatedByThreadId: null, ...overrides,
   };
 }
-function mount(tasks: BotTask[], acknowledge?: (input: { taskId: string; acknowledged: boolean }) => BotTask) {
+type StatusInput = { taskId: string; status: BotTask["status"]; waitingOn?: BotTask["waitingOn"]; waitingFor?: string; outcome?: string };
+function mount(tasks: BotTask[], acknowledge?: (input: { taskId: string; acknowledged: boolean }) => BotTask, setStatus?: (input: StatusInput) => BotTask) {
   const panel = app.threadPanelActions.find((entry) => entry.id === "work")!;
   const view = { tasks, bots: [{ id: bot.id, name: bot.name, role: bot.role, avatar: bot.avatar }, orchestrator], threadBots: { worker: bot.id, orch: orchestrator.id } };
   const threads = [thread("worker", 1, { title: "Runner audit", hasPendingInteraction: true }), thread("orch", 1, { title: "Orchestrator main" })];
   const slot = renderSlot(panel, { threadId: "current", params: null }, {
-    rpc: { tasks_list: () => view, task_acknowledge: (input: unknown) => acknowledge!(input as { taskId: string; acknowledged: boolean }) },
+    rpc: { tasks_list: () => view, task_acknowledge: (input: unknown) => acknowledge!(input as { taskId: string; acknowledged: boolean }),
+      task_set_status: (input: unknown) => setStatus!(input as StatusInput) },
     sidebarThreads: { projects: [], threads },
   });
   return { slot, view };
@@ -132,6 +135,65 @@ it("acknowledges read Done results and keeps them in acknowledged history", asyn
   fireEvent.click(slot.getByRole("button", { name: "Show acknowledged (1)" }));
   fireEvent.click(slot.getByRole("button", { name: "Return to Done" }));
   expect(calls).toEqual([{ taskId: done.id, acknowledged: true }, { taskId: done.id, acknowledged: false }]);
+});
+
+it("separates Waiting on Michael from Waiting on others and never presents an unrecorded owner as Michael", async () => {
+  const { slot } = mount([
+    decision,
+    task("chrome", "waiting", { title: "Stop Chrome prompt", waitingOn: "other", waitingFor: "Mosyle administrator" }),
+    task("legacy", "waiting", { title: "Old waiting task", waitingOn: null }),
+    task("bot", "waiting", { title: "Agent task", waitingOn: "agent" }),
+  ]);
+  const mine = await slot.findByRole("region", { name: /Waiting on Michael/ });
+  expect(within(mine).getAllByRole("listitem")).toHaveLength(1);
+  const others = slot.getByRole("region", { name: /Waiting on others/ });
+  expect(others.textContent).toContain("Waiting on Mosyle administrator");
+  expect(others.textContent).toContain("Waiting on owner not recorded");
+  expect(others.textContent).toContain("Waiting on an agent");
+  expect(slot.getByRole("button", { name: /Old waiting task\. Waiting on owner not recorded\. Open details/ })).toBeTruthy();
+});
+
+it("changes status from the row menu with the keyboard and keeps focus on the moved row", async () => {
+  const other = task("chrome", "waiting", { title: "Stop Chrome prompt", waitingOn: "other", waitingFor: "Mosyle administrator" });
+  const calls: StatusInput[] = [];
+  const { slot, view } = mount([other], undefined, (input) => { calls.push(input); view.tasks[0] = { ...other, waitingOn: "michael", waitingFor: "" }; return view.tasks[0]!; });
+  const trigger = await slot.findByRole("button", { name: /Change status of Stop Chrome prompt\. Now: Waiting on Mosyle administrator/ });
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  const menu = await slot.findByRole("menu");
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Now", "Waiting on Michael", "Waiting on a person or team…", "Waiting on an agent…", "Waiting on an external party…", "Done…"]);
+  fireEvent.click(within(menu).getByRole("menuitem", { name: "Waiting on Michael" }));
+  await waitFor(() => expect(calls).toEqual([{ taskId: other.id, status: "waiting", waitingOn: "michael" }]));
+  const moved = await slot.findByRole("button", { name: /Stop Chrome prompt\. Waiting on Michael\. Open details/ });
+  await waitFor(() => expect(document.activeElement).toBe(moved));
+});
+
+it("edits status and waiting owner in the detail with explicit Save, validation, and a named owner", async () => {
+  const calls: StatusInput[] = [];
+  const { slot, view } = mount([decision], undefined, (input) => { calls.push(input); view.tasks[0] = { ...decision, status: input.status, waitingOn: input.waitingOn ?? null, waitingFor: input.waitingFor ?? "" }; return view.tasks[0]!; });
+  fireEvent.click(await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Waiting on Michael/ }));
+  const save = slot.getByRole("button", { name: "Save status" }) as HTMLButtonElement;
+  expect(save.disabled).toBe(true);
+  fireEvent.change(slot.getByLabelText("Waiting on"), { target: { value: "other" } });
+  const who = slot.getByLabelText("Who (optional)");
+  fireEvent.change(who, { target: { value: "flo360 reviewers" } });
+  expect(fireEvent.keyDown(who, { key: "Enter" })).toBe(false);
+  expect(calls).toEqual([]);
+  fireEvent.click(save);
+  await waitFor(() => expect(calls).toEqual([{ taskId: decision.id, status: "waiting", waitingOn: "other", waitingFor: "flo360 reviewers" }]));
+  expect(await slot.findByText("Waiting on flo360 reviewers")).toBeTruthy();
+  fireEvent.change(slot.getByLabelText("Progress"), { target: { value: "done" } });
+  fireEvent.change(slot.getByLabelText("Outcome"), { target: { value: " " } });
+  fireEvent.click(slot.getByRole("button", { name: "Save status" }));
+  expect(await slot.findByText("Add the outcome before marking this Done.")).toBeTruthy();
+  expect(calls).toHaveLength(1);
+});
+
+it("opens the detail editor preset from a row menu choice that needs more detail", async () => {
+  const { slot } = mount([decision]);
+  fireEvent.keyDown(await slot.findByRole("button", { name: /Change status of Review Flo360/ }), { key: "ArrowDown" });
+  fireEvent.click(await slot.findByRole("menuitem", { name: "Waiting on an external party…" }));
+  expect((slot.getByLabelText("Waiting on") as HTMLSelectElement).value).toBe("external");
+  await waitFor(() => expect(document.activeElement).toBe(slot.getByLabelText("Who (optional)")));
 });
 
 it("refreshes on the task change signal only, without polling", async () => {

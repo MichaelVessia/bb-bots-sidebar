@@ -137,7 +137,15 @@ screen.
 
 - **Waiting on Michael** comes first. Each row shows what you must decide or do,
   the owner bot, and its age. Click the heading to see only those tasks.
-- **Now** lists active work. Empty sections are hidden.
+- **Now** lists active work. **Waiting on others** lists tasks waiting on another
+  person or team, an agent, or an external party, and names who. A task whose
+  waiting owner was never recorded says "owner not recorded"; it never appears as
+  Michael's. Empty sections are hidden.
+- **Status** on every row opens a menu: Now, Waiting on Michael, Waiting on a person
+  or team…, on an agent…, on an external party…, or Done…. Choices ending in "…" open
+  the detail's status form to name who (optional) or write the outcome. The detail's
+  **Status** form (Progress, Waiting on, Who, Outcome) saves only on **Save status**.
+  Both work fully from the keyboard; there is no drag.
 - **Done** is collapsed with its count. **Acknowledge** moves a read result out
   of the list without deleting it; **Show acknowledged** lists them, and **Return to
   Done** brings one back. Any later update to a task clears its acknowledgement.
@@ -167,7 +175,10 @@ bb bots task set <task-id> --status done --outcome "Merged; prod deploy passed"
 # Give Michael a decision he can act on: one task per decision.
 bb bots task set <task-id> --status waiting --next "Choose the rollout window for #4519" \
   --context "Staging passed; two windows are free." --recommendation "Tuesday 9am" \
-  --option "Tuesday 9am" --option "Thursday 2pm" --ask-thread <orchestrator-conversation-id>
+  --option "Tuesday 9am" --option "Thursday 2pm" --ask-thread <orchestrator-conversation-id> \
+  --waiting-on michael
+# Waiting on someone else: name who holds the next action.
+bb bots task set <task-id> --status waiting --waiting-on other --waiting-for "Mosyle administrator"
 bb bots task list [--status now|waiting|done] [--bot <bot>] [--thread <id>] [--json]
 bb bots task remove <task-id>
 ```
@@ -178,6 +189,10 @@ Validation: titles are one line (200 characters); Now/Waiting need `--next`
 `--context` (2,000), `--recommendation` (1,000), and up to five single-line `--option`
 values are optional; `--option none` clears options. `--ask-thread` defaults to the
 creating conversation. Older records read with empty decision fields.
+`--waiting-on` is `michael`, `other` (person or team), `agent`, or `external`;
+`--waiting-for` names who (120 characters). Older Waiting records have no owner
+and show "owner not recorded". Leaving Waiting clears both fields. Panel status
+changes record no writer thread and keep the task's ask conversation.
 Threads must exist; `--thread none` unlinks. Callers outside a bot conversation
 must pass `--bot`. The store holds at most 1,000 tasks. The Work page receives only
 public bot fields (name, role, avatar), never SOUL, memory, or settings. It refreshes

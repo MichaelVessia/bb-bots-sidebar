@@ -130,8 +130,33 @@ describe("decision detail and acknowledgement", () => {
     const legacy = { id: `task_${"a".repeat(32)}`, title: "Old", status: "waiting", botId: bot.id, threadId: "worker", links: [], nextStep: "Decide", outcome: "", createdAt: 1, updatedAt: 2, updatedByThreadId: "other" };
     host.bb.storage.database().prepare("INSERT INTO bot_tasks(id,data,updated_at) VALUES (?,?,?)").run(legacy.id, JSON.stringify(legacy), 2);
     const view = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: object[]; threadBots: Record<string, string> };
-    expect(view.tasks).toEqual([{ ...legacy, context: "", recommendation: "", options: [], askThreadId: null, acknowledgedAt: null }]);
+    expect(view.tasks).toEqual([{ ...legacy, context: "", recommendation: "", options: [], askThreadId: null, acknowledgedAt: null, waitingOn: null, waitingFor: "" }]);
     expect(view.threadBots).toEqual({ worker: bot.id });
+  });
+});
+
+describe("waiting owner", () => {
+  it("records who holds the next action and clears it when the task leaves Waiting", async () => {
+    const { run, create } = await setup();
+    const task = await create(["--title", "Chrome prompt", "--status", "waiting", "--next", "Change the policy", "--waiting-on", "other", "--waiting-for", "Mosyle administrator"]);
+    expect(task).toMatchObject({ waitingOn: "other", waitingFor: "Mosyle administrator" });
+    expect(await create([task.id, "--waiting-on", "michael"])).toMatchObject({ waitingOn: "michael", waitingFor: "" });
+    expect(await create([task.id, "--status", "now"])).toMatchObject({ waitingOn: null, waitingFor: "" });
+    expect(await create(["--title", "Unset", "--status", "waiting", "--next", "N"])).toMatchObject({ waitingOn: null });
+    for (const argv of [["--waiting-on", "boss"], ["--waiting-for", "x".repeat(121)], ["--waiting-for", "a\nb"]]) {
+      expect((await run(["set", task.id, "--status", "waiting", ...argv], "worker")).exitCode).toBe(1);
+    }
+  });
+
+  it("lets Michael set status and owner from the panel, requiring an owner for Waiting and an outcome for Done", async () => {
+    const { host, create } = await setup();
+    const task = await create(["--title", "PR review", "--status", "waiting", "--next", "Review", "--waiting-on", "michael", "--context", "Keep me"]);
+    const call = (input: object) => host.harness.behavior.callRpc("task_set_status", { taskId: task.id, ...input });
+    await expect(call({ status: "waiting" })).rejects.toThrow();
+    await expect(call({ status: "done" })).rejects.toThrow("Done tasks need an outcome");
+    const moved = await call({ status: "waiting", waitingOn: "other", waitingFor: "flo360 reviewers" }) as Record<string, unknown>;
+    expect(moved).toMatchObject({ status: "waiting", waitingOn: "other", waitingFor: "flo360 reviewers", context: "Keep me", nextStep: "Review", updatedByThreadId: null, askThreadId: "worker" });
+    expect(await call({ status: "done", outcome: "Approved by reviewers" })).toMatchObject({ status: "done", waitingOn: null, outcome: "Approved by reviewers" });
   });
 });
 
