@@ -111,6 +111,13 @@ export const taskSchema = z.object({
   id: z.string().regex(/^task_[a-f0-9]{32}$/), title: printableText(200, true, 1), status: z.enum(TASK_STATUSES),
   botId: id, threadId: id.nullable(), links: z.array(taskLinkSchema).max(5),
   nextStep: printableText(500), outcome: printableText(1000),
+  // Decision detail is optional and explicit; older records read with defaults.
+  context: printableText(2000).default(""), recommendation: printableText(1000).default(""),
+  options: z.array(printableText(300, true, 1)).max(5).default([]),
+  // Conversation that can explain the task; the Ask action drafts a question there.
+  askThreadId: id.nullable().default(null),
+  // Set when Michael has read a Done result; any explicit update clears it.
+  acknowledgedAt: z.number().nullable().default(null),
   createdAt: z.number(), updatedAt: z.number(), updatedByThreadId: id.nullable(),
 }).strict().superRefine((task, ctx) => {
   if (task.status !== "done" && !task.nextStep) ctx.addIssue({ code: "custom", path: ["nextStep"], message: "Now and Waiting tasks need a next step" });
@@ -143,5 +150,7 @@ export const rpcContract = defineRpcContract({
   state_update: { input: stateUpdateSchema.safeExtend({ botId: id }), output: stateOutput },
   state_apply: { input: z.object({ botId: id, change: stateMutationSchema }).strict(), output: stateMutationResultSchema },
   // Public bot fields only: the Work view never receives SOUL, memory, or settings.
-  tasks_list: { input: z.null(), output: z.object({ tasks: z.array(taskSchema), bots: z.array(taskBotSchema) }).strict() },
+  // threadBots maps task-linked conversations to their bots for labels only.
+  tasks_list: { input: z.null(), output: z.object({ tasks: z.array(taskSchema), bots: z.array(taskBotSchema), threadBots: z.record(id, id) }).strict() },
+  task_acknowledge: { input: z.object({ taskId: z.string().regex(/^task_[a-f0-9]{32}$/), acknowledged: z.boolean() }).strict(), output: taskSchema },
 });

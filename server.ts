@@ -410,6 +410,13 @@ export default async function plugin(bb: BbPluginApi) {
     state_read: ({ botId, file }) => serial(botId, async () => state.read(await state.prepare(botId), file)),
     state_update: ({ botId, file, content, expectedSha256 }) => serial(botId, async () => { await state.prepare(botId); return state.update(botId, file, content, expectedSha256); }),
     state_apply: ({ botId, change }) => applyBotState(botId, change),
-    tasks_list: async () => ({ tasks: tasks.list(), bots: store.list().map(({ id, name, role, avatar }) => ({ id, name, role, avatar })) }),
+    tasks_list: async () => {
+      const list = tasks.list();
+      // Label linked conversations with their bots; a missing thread stays unlabeled.
+      const threadIds = [...new Set(list.flatMap((task) => [task.threadId, task.askThreadId]).filter((threadId): threadId is string => Boolean(threadId)))];
+      const owners = await Promise.all(threadIds.map(async (threadId) => [threadId, await resolveOwner(threadId, false).catch(() => null)] as const));
+      return { tasks: list, bots: store.list().map(({ id, name, role, avatar }) => ({ id, name, role, avatar })), threadBots: Object.fromEntries(owners.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))) };
+    },
+    task_acknowledge: async ({ taskId, acknowledged }) => { const task = tasks.acknowledge(taskId, acknowledged); publishTasks(); return task; },
   });
 }

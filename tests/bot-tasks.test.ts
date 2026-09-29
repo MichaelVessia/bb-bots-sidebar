@@ -94,6 +94,47 @@ describe("Work task records", () => {
   });
 });
 
+describe("decision detail and acknowledgement", () => {
+  it("stores explicit context, recommendation, options, and ask thread, and replaces or clears options", async () => {
+    const { create } = await setup();
+    const task = await create(["--title", "Pick rollout", "--status", "waiting", "--next", "Choose a rollout window", "--context", "Two windows are free.",
+      "--recommendation", "Tuesday", "--option", "Tuesday 9am", "--option", "Thursday 2pm", "--ask-thread", "other"]);
+    expect(task).toMatchObject({ context: "Two windows are free.", recommendation: "Tuesday", options: ["Tuesday 9am", "Thursday 2pm"], askThreadId: "other", acknowledgedAt: null });
+    expect(await create([task.id, "--option", "none"])).toMatchObject({ options: [], askThreadId: "other" });
+  });
+
+  it("defaults the ask thread to the creating conversation and validates it", async () => {
+    const { run, create } = await setup();
+    expect(await create(["--title", "T", "--status", "now", "--next", "N", "--bot", "Atlas"], "other")).toMatchObject({ askThreadId: "other" });
+    for (const argv of [["--ask-thread", "missing"], ["--option", "one\ntwo"], ["--option", "none", "--option", "x"]]) {
+      const result = await run(["set", "--title", "T", "--status", "now", "--next", "N", ...argv], "worker");
+      expect(result.exitCode).toBe(1);
+    }
+  });
+
+  it("acknowledges only Done results without changing progress, and any update clears it", async () => {
+    const { host, create } = await setup();
+    const now = await create(["--title", "T", "--status", "now", "--next", "N"]);
+    await expect(host.harness.behavior.callRpc("task_acknowledge", { taskId: now.id, acknowledged: true })).rejects.toThrow("Only Done tasks");
+    const done = await create([now.id, "--status", "done", "--outcome", "Merged"]);
+    host.harness.inspection.realtimeSignals.length = 0;
+    const acknowledged = await host.harness.behavior.callRpc("task_acknowledge", { taskId: done.id, acknowledged: true }) as { acknowledgedAt: number; updatedAt: number };
+    expect(acknowledged.acknowledgedAt).toBeTypeOf("number");
+    expect(acknowledged.updatedAt).toBe(done.updatedAt);
+    expect(host.harness.inspection.realtimeSignals.map((signal) => signal.channel)).toEqual([TASKS_CHANGED]);
+    expect(await create([done.id, "--outcome", "Merged and deployed"])).toMatchObject({ acknowledgedAt: null });
+  });
+
+  it("reads records written before the decision fields existed", async () => {
+    const { host, bot } = await setup();
+    const legacy = { id: `task_${"a".repeat(32)}`, title: "Old", status: "waiting", botId: bot.id, threadId: "worker", links: [], nextStep: "Decide", outcome: "", createdAt: 1, updatedAt: 2, updatedByThreadId: "other" };
+    host.bb.storage.database().prepare("INSERT INTO bot_tasks(id,data,updated_at) VALUES (?,?,?)").run(legacy.id, JSON.stringify(legacy), 2);
+    const view = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: object[]; threadBots: Record<string, string> };
+    expect(view.tasks).toEqual([{ ...legacy, context: "", recommendation: "", options: [], askThreadId: null, acknowledgedAt: null }]);
+    expect(view.threadBots).toEqual({ worker: bot.id });
+  });
+});
+
 describe("task links", () => {
   it("labels PRs and issues and accepts only credential-free https URLs", () => {
     expect(taskLinkLabel("https://github.com/flocasts/flo-control/pull/130")).toEqual({ kind: "pr", label: "flo-control#130" });

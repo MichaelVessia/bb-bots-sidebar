@@ -75,8 +75,12 @@ existing conversation histories and track legacy home project IDs for compatibil
   same `WorkPanel`, flush layout): Now / Waiting on Michael / Done, with the Waiting
   count in the content. No nav page, other dashboards, or Bots/Chats list changes.
 - Tasks live in `bot_tasks`, keyed `task_<hex>`, written only by explicit
-  `bb bots task set|remove`. Thread state is live data: never copy it into a task,
+  `bb bots task set|remove`, plus the panel's Done acknowledgement (read state, not
+  progress; any update clears it). Thread state is live data: never copy it into a task,
   infer an outcome from an idle thread, or scrape chat text. No model calls.
+- The panel lists Waiting first, hides empty sections, collapses Done, and opens a
+  task detail with a back path. Show missing decision fields honestly. Ask only drafts
+  an unsent question in the ask thread through the composer bridge; never send.
 - Validate every record: https links without credentials, existing threads/bots,
   next step for Now/Waiting, outcome for Done. The page receives only public bot
   fields and refreshes on `bot-tasks-changed`, never by polling.

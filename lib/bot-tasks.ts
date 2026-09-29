@@ -6,7 +6,8 @@ import { nextTimestamp } from "./bot-store";
 
 export const TASK_USAGE = `bb bots task list [--status now|waiting|done] [--bot <bot>] [--thread <conversation-id>] [--json]
 bb bots task set [<task-id>] [--title <title>] [--status now|waiting|done] [--bot <bot>]
-                 [--thread <conversation-id>|none] [--link <https-url>]... [--next <step>] [--outcome <text>] [--json]
+                 [--thread <conversation-id>|none] [--link <https-url>]... [--next <step>] [--outcome <text>]
+                 [--context <text>] [--recommendation <text>] [--option <choice>]... [--ask-thread <conversation-id>|none] [--json]
 bb bots task remove <task-id> [--json]
 
 Tasks feed the Work view: Now, Waiting on Michael, and Done. Records are explicit;
@@ -15,9 +16,14 @@ Without <task-id>, set creates a task and prints its ID; --title and --status ar
 The owner defaults to the invoking conversation's bot, and the linked thread to the
 invoking conversation. Use --thread none for no thread. Repeated --link options replace
 all links (max 5 https URLs, e.g. a PR or issue); --link none clears them.
-Now/Waiting need --next; Done needs --outcome.`;
+Now/Waiting need --next; Done needs --outcome.
+For decisions, --next states exactly what Michael must decide or do. --context (2000),
+--recommendation (1000), and up to 5 single-line --option choices appear in the task
+detail; repeated --option replaces the list and --option none clears it. The Ask action
+drafts an unsent question in --ask-thread, which defaults to the creating conversation.
+Any update clears Michael's acknowledgement of a Done result.`;
 
-type TaskFields = Partial<Pick<BotTask, "title" | "status" | "botId" | "threadId" | "links" | "nextStep" | "outcome">>;
+type TaskFields = Partial<Pick<BotTask, "title" | "status" | "botId" | "threadId" | "links" | "nextStep" | "outcome" | "context" | "recommendation" | "options" | "askThreadId">>;
 
 export function createTaskStore(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -41,10 +47,22 @@ export function createTaskStore(bb: BbPluginApi) {
           id: current?.id ?? `task_${randomUUID().replaceAll("-", "")}`, threadId: null, links: [], nextStep: "", outcome: "",
           ...current, ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
           createdAt: current?.createdAt ?? now, updatedAt: current ? nextTimestamp(current.updatedAt) : now, updatedByThreadId,
+          acknowledgedAt: null,
         });
         if (!merged.success) throw new Error(merged.error.issues.map((issue) => `${issue.path.join(".") || "task"}: ${issue.message}`).join("; "));
         const task = merged.data;
         db.prepare("INSERT INTO bot_tasks(id,data,updated_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at").run(task.id, JSON.stringify(task), task.updatedAt);
+        return task;
+      }).immediate();
+    },
+    // Acknowledgement is Michael's read state, not task progress: keep updatedAt.
+    acknowledge(id: string, acknowledged: boolean): BotTask {
+      return db.transaction(() => {
+        const current = get(id);
+        if (!current) throw new Error("This task no longer exists.");
+        if (acknowledged && current.status !== "done") throw new Error("Only Done tasks can be acknowledged.");
+        const task = taskSchema.parse({ ...current, acknowledgedAt: acknowledged ? Date.now() : null });
+        db.prepare("UPDATE bot_tasks SET data = ? WHERE id = ?").run(JSON.stringify(task), id);
         return task;
       }).immediate();
     },
@@ -53,16 +71,17 @@ export function createTaskStore(bb: BbPluginApi) {
 }
 export type TaskStore = ReturnType<typeof createTaskStore>;
 
-type TaskOptions = { command: "list" | "set" | "remove"; json: boolean; taskId?: string; status?: TaskStatus; title?: string; bot?: string; thread?: string; links: string[]; next?: string; outcome?: string };
-const TEXT_OPTIONS = { "--title": "title", "--bot": "bot", "--thread": "thread", "--next": "next", "--outcome": "outcome" } as const;
+type TaskOptions = { command: "list" | "set" | "remove"; json: boolean; taskId?: string; status?: TaskStatus; title?: string; bot?: string; thread?: string; links: string[]; options: string[]; next?: string; outcome?: string; context?: string; recommendation?: string; askThread?: string };
+const TEXT_OPTIONS = { "--title": "title", "--bot": "bot", "--thread": "thread", "--next": "next", "--outcome": "outcome", "--context": "context", "--recommendation": "recommendation", "--ask-thread": "askThread" } as const;
+const REPEATED = ["--link", "--option"];
 function parseTask(argv: string[]): TaskOptions | null {
   const command = argv[0];
   if (!command || command === "--help" || command === "help") return null;
   if (command !== "list" && command !== "set" && command !== "remove") throw new Error(`Unknown task command: ${command}\n${TASK_USAGE}`);
-  const options: TaskOptions = { command, json: false, links: [] };
+  const options: TaskOptions = { command, json: false, links: [], options: [] };
   const positional: string[] = [];
   const seen = new Set<string>();
-  const allowed = command === "list" ? ["--status", "--bot", "--thread"] : command === "set" ? [...Object.keys(TEXT_OPTIONS), "--status", "--link"] : [];
+  const allowed = command === "list" ? ["--status", "--bot", "--thread"] : command === "set" ? [...Object.keys(TEXT_OPTIONS), "--status", ...REPEATED] : [];
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help") return null;
@@ -70,12 +89,13 @@ function parseTask(argv: string[]): TaskOptions | null {
     if (!arg.startsWith("--")) { positional.push(arg); continue; }
     if (arg === "--json") { options.json = true; continue; }
     if (!allowed.includes(arg)) throw new Error(`Unknown option: ${arg}`);
-    if (arg !== "--link" && seen.has(arg)) throw new Error(`Repeated option: ${arg}`);
+    if (!REPEATED.includes(arg) && seen.has(arg)) throw new Error(`Repeated option: ${arg}`);
     seen.add(arg);
     const value = argv[++i];
     // Text values may legitimately be empty (to clear a field) but never a flag.
     if (value === undefined || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
     if (arg === "--link") options.links.push(value);
+    else if (arg === "--option") options.options.push(value);
     else if (arg === "--status") {
       if (!(TASK_STATUSES as readonly string[]).includes(value)) throw new Error("--status must be now, waiting, or done");
       options.status = value as TaskStatus;
@@ -117,7 +137,9 @@ export async function runTaskCommand(deps: {
     publish();
     return { exitCode: 0, stdout: options.json ? JSON.stringify({ removed: options.taskId }) : `Removed ${options.taskId}.` };
   }
-  if (options.links.includes("none") && options.links.length > 1) throw new Error("--link none cannot be combined with other links");
+  for (const [flag, values] of [["--link", options.links], ["--option", options.options]] as const) {
+    if (values.includes("none") && values.length > 1) throw new Error(`${flag} none cannot be combined with other values`);
+  }
   const creating = !options.taskId;
   if (creating && (!options.title || !options.status)) throw new Error(`A new task needs --title and --status\n${TASK_USAGE}`);
   // The caller's conversation must exist; its bot is the default owner.
@@ -127,16 +149,21 @@ export async function runTaskCommand(deps: {
     botId = ctx.threadId ? await resolveOwner(ctx.threadId, false) ?? undefined : undefined;
     if (!botId) throw new Error("This conversation belongs to no bot. Choose the owner with --bot <bot-id>.");
   }
-  let threadId: string | null | undefined = options.thread === "none" ? null : options.thread ?? (creating ? ctx.threadId ?? null : undefined);
-  if (threadId) {
+  const conversation = async (value: string | undefined) => {
+    const threadId = value === "none" ? null : value ?? (creating ? ctx.threadId ?? null : undefined);
+    if (!threadId) return threadId;
     const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
     if (!thread || thread.deletedAt) throw new Error(`Conversation not found: ${threadId}`);
-    threadId = thread.id;
-  }
+    return thread.id;
+  };
+  const threadId = await conversation(options.thread);
+  const askThreadId = await conversation(options.askThread);
   ctx.signal?.throwIfAborted();
   const task = tasks.set(options.taskId ?? null, {
     title: options.title, status: options.status, botId, threadId,
     links: options.links.length ? options.links.filter((link) => link !== "none") : undefined, nextStep: options.next, outcome: options.outcome,
+    context: options.context, recommendation: options.recommendation, askThreadId,
+    options: options.options.length ? options.options.filter((option) => option !== "none") : undefined,
   }, ctx.threadId ?? null);
   publish();
   return { exitCode: 0, stdout: options.json ? JSON.stringify({ task }) : `${creating ? "Created" : "Updated"} ${task.id} (${task.status}). Update it with: bb bots task set ${task.id} --status <now|waiting|done> ...` };

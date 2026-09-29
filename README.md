@@ -133,12 +133,21 @@ in bot state.
 
 **Work** is a right-panel tab. Beside any thread, or on the New thread screen,
 open the panel launcher and choose **Work**. BB keeps the tab with that thread or
-screen. The tab shows three lists: **Now**, **Waiting on Michael** (its count is
-highlighted), and **Done**. Each task shows its title, owner bot, linked BB thread
-with that thread's live status icon, PR/issue links, last update time, next step,
-and last result or outcome. Click the thread to open it; PR/issue links open
-externally. Done shows the 20 most recent tasks. The layout wraps at narrow widths
-and scrolls inside the tab.
+screen.
+
+- **Waiting on Michael** comes first. Each row shows what you must decide or do,
+  the owner bot, and its age. Click the heading to see only those tasks.
+- **Now** lists active work. Empty sections are hidden.
+- **Done** is collapsed with its count. **Acknowledge** moves a read result out
+  of the list without deleting it; **Show acknowledged** lists them, and **Return to
+  Done** brings one back. Any later update to a task clears its acknowledgement.
+
+Click a row to open its detail: the exact request, recommendation and options,
+context, last result, PR/issue sources, and the owner's conversation with its live
+status. Fields the agent did not record say so. **Ask … to explain** opens the
+conversation that can explain the task (its `--ask-thread`) with an unsent question
+naming the task ID and title. You can edit it; nothing is sent. Back and Escape
+return to the list and restore focus. The owner name opens its thread from any row.
 
 Tasks are small, explicit records in the plugin's SQLite database, keyed by
 `task_<id>`. Live thread state (working, waiting, error) is never copied into a
@@ -155,6 +164,10 @@ bb bots task set --title "Runner audit" --status now --next "Scan 148 repos" \
 # Update selected fields.
 bb bots task set <task-id> --status waiting --next "Approve the prod deploy" --outcome "Staging passed"
 bb bots task set <task-id> --status done --outcome "Merged; prod deploy passed"
+# Give Michael a decision he can act on: one task per decision.
+bb bots task set <task-id> --status waiting --next "Choose the rollout window for #4519" \
+  --context "Staging passed; two windows are free." --recommendation "Tuesday 9am" \
+  --option "Tuesday 9am" --option "Thursday 2pm" --ask-thread <orchestrator-conversation-id>
 bb bots task list [--status now|waiting|done] [--bot <bot>] [--thread <id>] [--json]
 bb bots task remove <task-id>
 ```
@@ -162,6 +175,9 @@ bb bots task remove <task-id>
 Validation: titles are one line (200 characters); Now/Waiting need `--next`
 (500); Done needs `--outcome` (1,000). Links are at most five credential-free
 `https` URLs; repeating `--link` replaces the list and `--link none` clears it.
+`--context` (2,000), `--recommendation` (1,000), and up to five single-line `--option`
+values are optional; `--option none` clears options. `--ask-thread` defaults to the
+creating conversation. Older records read with empty decision fields.
 Threads must exist; `--thread none` unlinks. Callers outside a bot conversation
 must pass `--bot`. The store holds at most 1,000 tasks. The Work page receives only
 public bot fields (name, role, avatar), never SOUL, memory, or settings. It refreshes
