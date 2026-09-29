@@ -1,12 +1,13 @@
 # Independent Bots development
 
-Michael's install is a pinned managed Git source
-(`git:https://github.com/MichaelVessia/bb-bots-sidebar.git@<commit>`), not this
-checkout. Work in `~/projects/bb-bots-sidebar` on `michael/main-changes`; confirm
-the installed commit with `bb plugin source bots-sidebar` before editing. Deploy by
-pushing that branch to origin (never upstream) and installing the new commit. Do not
-`bb plugin remove` to switch source kinds, and do not edit older personal-workspace
-worktrees. The owner requested private, ID-keyed state,
+Michael's install is a local path install of this checkout
+(`path:/Users/michael.vessia/projects/bb-bots-sidebar`), on branch
+`michael/main-changes`. Confirm both with `bb plugin source bots-sidebar` and
+`git status -sb` before editing, and stay on that branch. BB loads the working tree
+directly, so a reload makes every edit live. Before `bb plugin reload bots-sidebar`,
+run `npm run typecheck`, `npm test`, and `bb plugin build`. Docs-only changes need no
+reload. Push commits to origin only, never upstream. Do not `bb plugin remove` or
+reinstall, and do not edit older personal-workspace worktrees. The owner requested private, ID-keyed state,
 not bot-home projects or special execution directories. Explicit user-created
 work projects are allowed, but never create a backing project for bot storage.
 Keep all UX refinements intact.
