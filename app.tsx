@@ -458,8 +458,13 @@ function BotGroup({
   const subtitle = [metadata.role, ownedProjectNames.join(", ")].filter(Boolean).join(" · ");
   const subtitleTitle = [metadata.role, ownedProjectNames.length ? `Owned projects: ${ownedProjectNames.join(", ")}` : ""].filter(Boolean).join(" · ");
   const idleVariant = [...metadata.id].reduce((total, character) => total + character.charCodeAt(0), 0) % 3;
+  // BB's thread.next/previous/jump commands click anchors by DOM query. A folded
+  // bot stands in for its conversations: it keeps the active thread's place so
+  // next/previous continue from it, and opening it opens the first root.
+  const shortcutThreadId = topicsVisible || !latest ? null : threads.some((thread) => thread.id === activeThreadId) ? activeThreadId : latest.id;
   return (
     <section className="project-group">
+      {shortcutThreadId ? <a hidden aria-hidden="true" tabIndex={-1} data-sidebar-thread-shortcut-target="" data-sidebar-thread-id={shortcutThreadId} onClick={(event) => { event.preventDefault(); onOpenBot(); }} /> : null}
       <RowContextMenu items={[
         { label: "New conversation…", action: onNewConversation },
         { label: "New conversation in project…", action: onNewInProject, disabled: !hasWorkProjects },

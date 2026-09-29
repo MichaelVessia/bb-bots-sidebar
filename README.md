@@ -165,6 +165,9 @@ in bot state.
   collapsed by default. Once a bot is explicitly expanded, navigation reveals
   the viewed ancestor path. Navigation never expands a collapsed bot.
   Chats retains its separate overflow.
+- BB's **Next thread**, **Previous thread**, and **Open thread 1–9** shortcuts
+  follow the visible sidebar order. A collapsed bot counts as one entry that opens
+  its first conversation; an expanded bot contributes its visible conversation rows.
 - The avatar's bottom-right spinner shows its **first conversation** working. Small pulsing dots
   to the left show other working conversations—even when collapsed. Three slots
   keep it compact; a **+** indicates overflow and the tooltip gives the exact count.
