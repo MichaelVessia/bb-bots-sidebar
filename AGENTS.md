@@ -78,8 +78,8 @@ existing conversation histories and track legacy home project IDs for compatibil
   `bb bots task set|remove`, the panel's manual status/owner change, and its Done
   acknowledgement (read state, not progress; any update clears it). Thread state is live data: never copy it into a task,
   infer an outcome from an idle thread, or scrape chat text. No model calls.
-- Waiting tasks carry an explicit owner (`waitingOn`: michael / other / agent /
-  external, plus `waitingFor`). Unrecorded owners never display as Michael. Show
+- Waiting tasks carry an explicit owner (`waitingOn`: michael / other / agent, plus
+  `waitingFor`; legacy `external` reads as `other`). Save status returns to the list. Unrecorded owners never display as Michael. Show
   Waiting on Michael and Waiting on others separately. Michael may change status and
   owner manually through the row Status menu or the detail's explicit-Save form
   (`task_set_status`); keep both keyboard accessible and never require drag.

@@ -160,7 +160,7 @@ it("changes status from the row menu with the keyboard and keeps focus on the mo
   const trigger = await slot.findByRole("button", { name: /Change status of Stop Chrome prompt\. Now: Waiting on Mosyle administrator/ });
   fireEvent.keyDown(trigger, { key: "ArrowDown" });
   const menu = await slot.findByRole("menu");
-  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Now", "Waiting on Michael", "Waiting on a person or team…", "Waiting on an agent…", "Waiting on an external party…", "Done…"]);
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Now", "Waiting on Michael", "Waiting on someone else…", "Waiting on an agent…", "Done…"]);
   fireEvent.click(within(menu).getByRole("menuitem", { name: "Waiting on Michael" }));
   await waitFor(() => expect(calls).toEqual([{ taskId: other.id, status: "waiting", waitingOn: "michael" }]));
   const moved = await slot.findByRole("button", { name: /Stop Chrome prompt\. Waiting on Michael\. Open details/ });
@@ -180,19 +180,39 @@ it("edits status and waiting owner in the detail with explicit Save, validation,
   expect(calls).toEqual([]);
   fireEvent.click(save);
   await waitFor(() => expect(calls).toEqual([{ taskId: decision.id, status: "waiting", waitingOn: "other", waitingFor: "flo360 reviewers" }]));
-  expect(await slot.findByText("Waiting on flo360 reviewers")).toBeTruthy();
+  // Save returns to the Work list with focus on the task in its new section.
+  const others = await slot.findByRole("region", { name: /Waiting on others/ });
+  const moved = within(others).getByRole("button", { name: /Review Flo360 launch PRs\. Waiting on flo360 reviewers\. Open details/ });
+  await waitFor(() => expect(document.activeElement).toBe(moved));
+  expect(slot.queryByRole("button", { name: "Save status" })).toBeNull();
+  fireEvent.click(moved);
+  fireEvent.change(slot.getByLabelText("Progress"), { target: { value: "now" } });
+  fireEvent.click(slot.getByRole("button", { name: "Reset" }));
+  expect((slot.getByLabelText("Progress") as HTMLSelectElement).value).toBe("waiting");
   fireEvent.change(slot.getByLabelText("Progress"), { target: { value: "done" } });
   fireEvent.change(slot.getByLabelText("Outcome"), { target: { value: " " } });
   fireEvent.click(slot.getByRole("button", { name: "Save status" }));
   expect(await slot.findByText("Add the outcome before marking this Done.")).toBeTruthy();
   expect(calls).toHaveLength(1);
+  expect(slot.getByRole("button", { name: "Save status" })).toBeTruthy();
+});
+
+it("returns to the list with Done expanded and focused after saving a task as Done", async () => {
+  const { slot, view } = mount([decision], undefined, (input) => { view.tasks[0] = { ...decision, status: "done", waitingOn: null, outcome: input.outcome! }; return view.tasks[0]!; });
+  fireEvent.click(await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Waiting on Michael/ }));
+  fireEvent.change(slot.getByLabelText("Progress"), { target: { value: "done" } });
+  fireEvent.change(slot.getByLabelText("Outcome"), { target: { value: "Approved" } });
+  fireEvent.click(slot.getByRole("button", { name: "Save status" }));
+  const row = await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Done\. Open details/ });
+  expect(slot.getByRole("button", { name: /Done/, expanded: true })).toBeTruthy();
+  await waitFor(() => expect(document.activeElement).toBe(row));
 });
 
 it("opens the detail editor preset from a row menu choice that needs more detail", async () => {
   const { slot } = mount([decision]);
   fireEvent.keyDown(await slot.findByRole("button", { name: /Change status of Review Flo360/ }), { key: "ArrowDown" });
-  fireEvent.click(await slot.findByRole("menuitem", { name: "Waiting on an external party…" }));
-  expect((slot.getByLabelText("Waiting on") as HTMLSelectElement).value).toBe("external");
+  fireEvent.click(await slot.findByRole("menuitem", { name: "Waiting on someone else…" }));
+  expect((slot.getByLabelText("Waiting on") as HTMLSelectElement).value).toBe("other");
   await waitFor(() => expect(document.activeElement).toBe(slot.getByLabelText("Who (optional)")));
 });
 

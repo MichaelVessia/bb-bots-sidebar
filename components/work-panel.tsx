@@ -16,7 +16,7 @@ type TaskView = { tasks: BotTask[]; bots: TaskBot[]; threadBots: Record<string, 
 type StatusChange = { status: TaskStatus; waitingOn?: WaitingOn; waitingFor?: string; outcome?: string };
 type Preset = Pick<StatusChange, "status" | "waitingOn">;
 type View = { kind: "list" } | { kind: "waiting" } | { kind: "task"; taskId: string; from: "list" | "waiting"; preset?: Preset };
-const WAITING_LABEL: Record<WaitingOn, string> = { michael: "Michael", other: "a person or team", agent: "an agent", external: "an external party" };
+const WAITING_LABEL: Record<WaitingOn, string> = { michael: "Michael", other: "someone else", agent: "an agent" };
 const MENU_ITEM_CLASS = "bot-menu-item cursor-default select-none rounded-sm px-2 py-1.5 text-xs outline-none data-[disabled]:opacity-40";
 const SELECT_CLASS = "h-7 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground";
 
@@ -40,7 +40,7 @@ export function useTasks() {
   const sequence = useRef(0);
   const refresh = useCallback(() => {
     const current = ++sequence.current;
-    rpc.call("tasks_list", null).then(
+    return rpc.call("tasks_list", null).then(
       (result) => { if (current === sequence.current) { setData(result); setError(null); } },
       (cause) => { if (current === sequence.current) setError(cause instanceof Error ? cause.message : String(cause)); },
     );
@@ -84,9 +84,8 @@ function StatusMenu({ task, onChange, onEdit }: { task: BotTask; onChange: (chan
   const items: { label: string; disabled?: boolean; select: () => void }[] = [
     { label: "Now", disabled: task.status === "now", select: () => onChange({ status: "now" }) },
     { label: "Waiting on Michael", disabled: waitsOnMichael(task), select: () => onChange({ status: "waiting", waitingOn: "michael" }) },
-    { label: "Waiting on a person or team…", select: () => onEdit({ status: "waiting", waitingOn: "other" }) },
+    { label: "Waiting on someone else…", select: () => onEdit({ status: "waiting", waitingOn: "other" }) },
     { label: "Waiting on an agent…", select: () => onEdit({ status: "waiting", waitingOn: "agent" }) },
-    { label: "Waiting on an external party…", select: () => onEdit({ status: "waiting", waitingOn: "external" }) },
     { label: "Done…", disabled: task.status === "done", select: () => onEdit({ status: "done" }) },
   ];
   return <DropdownMenu.Root>
@@ -164,7 +163,7 @@ function StatusEditor({ task, preset, onSave }: { task: BotTask; preset?: Preset
         {status === "waiting" ? <label className="space-y-1 text-[11px] text-muted-foreground" htmlFor={`${id}-on`}>Waiting on
           <select id={`${id}-on`} className={SELECT_CLASS} value={waitingOn} disabled={pending} onChange={(event) => { setWaitingOn(event.target.value as WaitingOn | ""); setError(null); }}>
             {!waitingOn ? <option value="" disabled>Not recorded — choose</option> : null}
-            <option value="michael">Michael</option><option value="other">A person or team</option><option value="agent">An agent</option><option value="external">An external party</option>
+            <option value="michael">Michael</option><option value="other">Someone else</option><option value="agent">An agent</option>
           </select>
         </label> : null}
       </div>
@@ -264,7 +263,8 @@ export function WorkPanel() {
   };
   const setStatus = async (taskId: string, change: StatusChange) => {
     await rpc.call("task_set_status", { taskId, ...change });
-    refresh();
+    // Wait for the moved task so the list renders it in its new section before focus.
+    await refresh();
   };
   // Quick menu changes keep the list; focus follows the row into its new section.
   const quickStatus = (task: BotTask, change: StatusChange) => {
@@ -288,7 +288,12 @@ export function WorkPanel() {
     const task = view.kind === "task" ? data.tasks.find((entry) => entry.id === view.taskId) : undefined;
     if (view.kind === "task") {
       body = task ? <TaskDetail task={task} bots={bots} threadBots={data.threadBots} threads={threads} now={now} backLabel={view.from === "waiting" ? "Waiting on Michael" : "Work"} preset={view.preset} onBack={back} onAcknowledge={(value) => acknowledge(task.id, value)}
-        onSetStatus={async (change) => { await setStatus(task.id, change); setView({ ...view, preset: undefined }); }} />
+        onSetStatus={async (change) => {
+          await setStatus(task.id, change);
+          // Back to the list: focus follows the task into its new section.
+          if (change.status === "done") setDoneOpen(true);
+          restoreFocus.current = task.id; setView({ kind: "list" });
+        }} />
         : <div className="space-y-2"><Missing>This task no longer exists.</Missing><Button type="button" variant="outline" size="sm" onClick={back}>Back</Button></div>;
     } else if (view.kind === "waiting") {
       body = <section aria-labelledby="work-waiting-focused" className="space-y-2">

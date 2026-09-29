@@ -8,7 +8,7 @@ export const TASK_USAGE = `bb bots task list [--status now|waiting|done] [--bot 
 bb bots task set [<task-id>] [--title <title>] [--status now|waiting|done] [--bot <bot>]
                  [--thread <conversation-id>|none] [--link <https-url>]... [--next <step>] [--outcome <text>]
                  [--context <text>] [--recommendation <text>] [--option <choice>]... [--ask-thread <conversation-id>|none]
-                 [--waiting-on michael|other|agent|external] [--waiting-for <who>] [--json]
+                 [--waiting-on michael|other|agent] [--waiting-for <who>] [--json]
 bb bots task remove <task-id> [--json]
 
 Tasks feed the Work view: Now, Waiting on Michael, and Done. Records are explicit;
@@ -23,8 +23,9 @@ For decisions, --next states exactly what Michael must decide or do. --context (
 detail; repeated --option replaces the list and --option none clears it. The Ask action
 drafts an unsent question in --ask-thread, which defaults to the creating conversation.
 Any update clears Michael's acknowledgement of a Done result.
-Waiting tasks name who holds the next action: --waiting-on michael, other (another person
-or team), agent, or external, plus --waiting-for with a name (120), e.g. "Mosyle administrator".
+Waiting tasks name who holds the next action: --waiting-on michael, other (someone else:
+a person, team, or external party), or agent, plus --waiting-for with a name (120), e.g.
+"Mosyle administrator". The older value external is accepted and stored as other.
 Without --waiting-on the Work view shows the owner as not recorded, never as Michael.
 Leaving Waiting clears both fields.`;
 
@@ -106,8 +107,9 @@ function parseTask(argv: string[]): TaskOptions | null {
     if (arg === "--link") options.links.push(value);
     else if (arg === "--option") options.options.push(value);
     else if (arg === "--waiting-on") {
-      if (!(WAITING_ON as readonly string[]).includes(value)) throw new Error("--waiting-on must be michael, other, agent, or external");
-      options.waitingOn = value as WaitingOn;
+      const waitingOn = value === "external" ? "other" : value;
+      if (!(WAITING_ON as readonly string[]).includes(waitingOn)) throw new Error("--waiting-on must be michael, other, or agent");
+      options.waitingOn = waitingOn as WaitingOn;
     } else if (arg === "--status") {
       if (!(TASK_STATUSES as readonly string[]).includes(value)) throw new Error("--status must be now, waiting, or done");
       options.status = value as TaskStatus;

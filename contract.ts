@@ -104,7 +104,10 @@ export const stateMutationResultSchema = z.object({ botId: id, target: stateTarg
 export const TASK_STATUSES = ["now", "waiting", "done"] as const;
 // Who holds the next action of a Waiting task. null means not recorded (older
 // records); it must never be shown as Michael.
-export const WAITING_ON = ["michael", "other", "agent", "external"] as const;
+// "other" is anyone else (a person, team, or external party), named by waitingFor.
+export const WAITING_ON = ["michael", "other", "agent"] as const;
+// Records and callers from before the merge may say "external"; read it as "other".
+const waitingOnSchema = z.preprocess((value) => value === "external" ? "other" : value, z.enum(WAITING_ON));
 export const TASKS_CHANGED = "bot-tasks-changed";
 export const TASK_LIMIT = 1000;
 const printableText = (max: number, singleLine = false, min = 0) => z.string().trim().min(min).max(max)
@@ -122,7 +125,7 @@ export const taskSchema = z.object({
   // Set when Michael has read a Done result; any explicit update clears it.
   acknowledgedAt: z.number().nullable().default(null),
   // Waiting only: the store clears both when a task leaves Waiting.
-  waitingOn: z.enum(WAITING_ON).nullable().default(null), waitingFor: printableText(120, true).default(""),
+  waitingOn: waitingOnSchema.nullable().default(null), waitingFor: printableText(120, true).default(""),
   createdAt: z.number(), updatedAt: z.number(), updatedByThreadId: id.nullable(),
 }).strict().superRefine((task, ctx) => {
   if (task.status !== "done" && !task.nextStep) ctx.addIssue({ code: "custom", path: ["nextStep"], message: "Now and Waiting tasks need a next step" });
@@ -160,7 +163,7 @@ export const rpcContract = defineRpcContract({
   tasks_list: { input: z.null(), output: z.object({ tasks: z.array(taskSchema), bots: z.array(taskBotSchema), threadBots: z.record(id, id) }).strict() },
   // Michael's manual status/owner change from the panel. Waiting needs an owner.
   task_set_status: { input: z.object({
-    taskId: z.string().regex(/^task_[a-f0-9]{32}$/), status: z.enum(TASK_STATUSES), waitingOn: z.enum(WAITING_ON).optional(),
+    taskId: z.string().regex(/^task_[a-f0-9]{32}$/), status: z.enum(TASK_STATUSES), waitingOn: waitingOnSchema.optional(),
     waitingFor: printableText(120, true).optional(), outcome: printableText(1000).optional(),
   }).strict().refine((value) => value.status !== "waiting" || value.waitingOn, "Choose who the task is waiting on"), output: taskSchema },
   task_acknowledge: { input: z.object({ taskId: z.string().regex(/^task_[a-f0-9]{32}$/), acknowledged: z.boolean() }).strict(), output: taskSchema },

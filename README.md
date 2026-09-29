@@ -137,14 +137,15 @@ screen.
 
 - **Waiting on Michael** comes first. Each row shows what you must decide or do,
   the owner bot, and its age. Click the heading to see only those tasks.
-- **Now** lists active work. **Waiting on others** lists tasks waiting on another
-  person or team, an agent, or an external party, and names who. A task whose
+- **Now** lists active work. **Waiting on others** lists tasks waiting on someone
+  else (a person, team, or outside party) or an agent, and names who. A task whose
   waiting owner was never recorded says "owner not recorded"; it never appears as
   Michael's. Empty sections are hidden.
-- **Status** on every row opens a menu: Now, Waiting on Michael, Waiting on a person
-  or team…, on an agent…, on an external party…, or Done…. Choices ending in "…" open
-  the detail's status form to name who (optional) or write the outcome. The detail's
-  **Status** form (Progress, Waiting on, Who, Outcome) saves only on **Save status**.
+- **Status** on every row opens a menu: Now, Waiting on Michael, Waiting on someone
+  else…, Waiting on an agent…, or Done…. Choices ending in "…" open the detail's
+  status form to name who (optional) or write the outcome. The detail's **Status**
+  form (Progress, Waiting on, Who, Outcome) saves only on **Save status**, then
+  returns to the list with focus on the task in its new section (Done opens if needed).
   Both work fully from the keyboard; there is no drag.
 - **Done** is collapsed with its count. **Acknowledge** moves a read result out
   of the list without deleting it; **Show acknowledged** lists them, and **Return to
@@ -189,7 +190,8 @@ Validation: titles are one line (200 characters); Now/Waiting need `--next`
 `--context` (2,000), `--recommendation` (1,000), and up to five single-line `--option`
 values are optional; `--option none` clears options. `--ask-thread` defaults to the
 creating conversation. Older records read with empty decision fields.
-`--waiting-on` is `michael`, `other` (person or team), `agent`, or `external`;
+`--waiting-on` is `michael`, `other` (someone else), or `agent`; the older value
+`external` is still accepted and read as `other`, keeping its name;
 `--waiting-for` names who (120 characters). Older Waiting records have no owner
 and show "owner not recorded". Leaving Waiting clears both fields. Panel status
 changes record no writer thread and keep the task's ask conversation.

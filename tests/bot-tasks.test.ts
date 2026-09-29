@@ -148,6 +148,18 @@ describe("waiting owner", () => {
     }
   });
 
+  it("reads and accepts the older external owner as someone else, keeping the name", async () => {
+    const { host, bot, run, create } = await setup();
+    const stored = { id: `task_${"e".repeat(32)}`, title: "Vendor fix", status: "waiting", botId: bot.id, threadId: "worker", links: [], nextStep: "Ship the fix", outcome: "", createdAt: 1, updatedAt: 2, updatedByThreadId: null, waitingOn: "external", waitingFor: "Mosyle support" };
+    host.bb.storage.database().prepare("INSERT INTO bot_tasks(id,data,updated_at) VALUES (?,?,?)").run(stored.id, JSON.stringify(stored), 2);
+    const view = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: { waitingOn: string; waitingFor: string }[] };
+    expect(view.tasks[0]).toMatchObject({ waitingOn: "other", waitingFor: "Mosyle support" });
+    expect(await create([stored.id, "--waiting-on", "external"])).toMatchObject({ waitingOn: "other", waitingFor: "Mosyle support" });
+    expect(JSON.parse((host.bb.storage.database().prepare("SELECT data FROM bot_tasks WHERE id = ?").get(stored.id) as { data: string }).data).waitingOn).toBe("other");
+    expect((await host.harness.behavior.callRpc("task_set_status", { taskId: stored.id, status: "waiting", waitingOn: "external", waitingFor: "Vendor" }) as { waitingOn: string }).waitingOn).toBe("other");
+    expect((await run(["--help"])).stdout).not.toContain("michael|other|agent|external");
+  });
+
   it("lets Michael set status and owner from the panel, requiring an owner for Waiting and an outcome for Done", async () => {
     const { host, create } = await setup();
     const task = await create(["--title", "PR review", "--status", "waiting", "--next", "Review", "--waiting-on", "michael", "--context", "Keep me"]);
