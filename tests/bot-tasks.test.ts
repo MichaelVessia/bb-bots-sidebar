@@ -89,7 +89,7 @@ describe("Work task records", () => {
     await host.reload();
     const view = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: { id: string }[]; bots: object[] };
     expect(view.tasks.map((task) => task.id)).toEqual([kept.id]);
-    expect(view.bots).toEqual([{ id: bot.id, name: "Atlas", role: "Research", avatar: bot.avatar }]);
+    expect(view.bots).toEqual([{ id: bot.id, name: "Atlas", role: "Research", avatar: bot.avatar, mainThreadId: bot.mainThreadId }]);
     expect(JSON.stringify(view)).not.toContain("You are Atlas");
   });
 });
@@ -132,6 +132,25 @@ describe("decision detail and acknowledgement", () => {
     const view = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: object[]; threadBots: Record<string, string> };
     expect(view.tasks).toEqual([{ ...legacy, context: "", recommendation: "", options: [], askThreadId: null, acknowledgedAt: null, needsAcknowledgement: false, waitingOn: null, waitingFor: "" }]);
     expect(view.threadBots).toEqual({ worker: bot.id });
+  });
+});
+
+describe("owner threads", () => {
+  it("labels each task owner's selected main so the panel links it only while the bot still owns it", async () => {
+    const { host, bot, create } = await setup();
+    host.threads.set("main", makeThreadResponse({ id: "main", projectId: "project" })); host.store.bind("main", bot.id);
+    host.store.save({ ...host.store.require(bot.id), mainThreadId: "main" });
+    await create(["--title", "Linked", "--status", "now", "--next", "N"]);
+    const view = await host.harness.behavior.callRpc("tasks_list", null) as { bots: { mainThreadId: string | null }[]; threadBots: Record<string, string> };
+    expect(view.bots.map((entry) => entry.mainThreadId)).toEqual(["main"]);
+    expect(view.threadBots).toEqual({ worker: bot.id, main: bot.id });
+    host.store.save({ ...host.store.require(bot.id), mainThreadId: "other" });
+    const foreign = await host.harness.behavior.callRpc("tasks_list", null) as { threadBots: Record<string, string> };
+    expect(foreign.threadBots.other).toBeUndefined();
+    expect((foreign as unknown as { archivedThreadIds: string[] }).archivedThreadIds).toEqual([]);
+    host.threads.set("worker", makeThreadResponse({ id: "worker", projectId: "project", archivedAt: 5 }));
+    const archived = await host.harness.behavior.callRpc("tasks_list", null) as { archivedThreadIds: string[] };
+    expect(archived.archivedThreadIds).toEqual(["worker"]);
   });
 });
 
