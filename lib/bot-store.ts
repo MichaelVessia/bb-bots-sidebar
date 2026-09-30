@@ -142,9 +142,14 @@ export function createBotStore(bb: BbPluginApi) {
         // The v1 importer recreates a missing bot for any unfinished snapshot project.
         const snapshot = state<{ done: string[] }>("legacy-snapshot");
         if (bot.legacyProjectId && snapshot && !snapshot.done.includes(bot.legacyProjectId)) setState("legacy-snapshot", { ...snapshot, done: [...snapshot.done, bot.legacyProjectId] });
+        // A legacy home stays a bot home after its bot is gone, never a work project.
+        if (bot.legacyHomeProjectId) setState("retired-legacy-homes", [...new Set([...state<string[]>("retired-legacy-homes") ?? [], bot.legacyHomeProjectId])]);
         db.prepare("DELETE FROM bots WHERE id = ?").run(id);
         return { bot, releasedProjectIds, detachedThreadIds };
       }).immediate();
+    },
+    legacyHomes(): Set<string> {
+      return new Set([...list().flatMap((bot) => bot.legacyHomeProjectId ? [bot.legacyHomeProjectId] : []), ...state<string[]>("retired-legacy-homes") ?? []]);
     },
     databasePath: db.name,
     legacySource(id: string): LegacyBotStateSource | null {

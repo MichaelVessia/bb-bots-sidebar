@@ -97,7 +97,7 @@ it("leaves unknown files in the export directory and reports them", async () => 
   writeFileSync(join(host.stateDirectory(atlas.id), "notes.txt"), "not ours");
   const result = await remove(host, atlas.id);
   expect(result.warnings).toHaveLength(1);
-  expect(readdirSync(host.stateDirectory(atlas.id))).toEqual(["notes.txt"]);
+  expect(readdirSync(host.stateDirectory(atlas.id)).sort()).toEqual(["bot.json", "notes.txt"]);
   expect(host.store.get(atlas.id)).toBeNull();
 });
 
@@ -148,7 +148,17 @@ it("does not let an unfinished legacy migration recreate a deleted bot", async (
   expect(host.store.owner("legacy-thread")).toBeNull();
 });
 
-it("waits for an in-flight legacy import so it cannot resurrect the deleted bot", async () => {
+it("keeps a deleted bot's legacy home out of work projects", async () => {
+  const host = await backend([project(), project("home")]); hosts.push(host);
+  const atlas = await host.create("Atlas", []);
+  host.store.save({ ...host.store.require(atlas.id), legacyHomeProjectId: "home" });
+  await remove(host, atlas.id);
+  expect((await host.harness.behavior.callRpc("bots_list", null) as { projects: { id: string }[] }).projects.map((entry) => entry.id)).toEqual(["project"]);
+  const beryl = await host.create("Beryl", []);
+  await expect(role(host, beryl.id, "own", "home")).rejects.toThrow("not a legacy bot home");
+});
+
+it("does not let a concurrent legacy import resurrect the deleted bot", async () => {
   const host = await setup();
   host.put("host-project", "/projects/project/bot.json", JSON.stringify({ version: 1, role: "Legacy", mainThreadId: null, awaitingMain: true }));
   thread(host, "legacy-thread");

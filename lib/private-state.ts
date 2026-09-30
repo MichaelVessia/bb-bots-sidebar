@@ -134,9 +134,10 @@ export function createPrivateBotState(bb: BbPluginApi, store: BotStore, publish:
       if (!stat(path)) return null;
       assertDirectory(path);
       assertOwned(path, botId);
-      for (const name of readdirSync(path)) {
-        if ((legacyStateFiles as readonly string[]).includes(name) || /^\.export-[0-9a-f-]+\.tmp$/.test(name)) unlinkSync(join(path, name));
-      }
+      const ours = (name: string) => (legacyStateFiles as readonly string[]).includes(name) || /^\.export-[0-9a-f-]+\.tmp$/.test(name);
+      for (const name of readdirSync(path)) if (ours(name)) unlinkSync(join(path, name));
+      // Keep the ownership marker beside anything we do not own.
+      if (readdirSync(path).some((name) => name !== "bot.json")) throw new Error("Private state directory contains foreign files");
       if (stat(join(path, "bot.json"))) unlinkSync(join(path, "bot.json"));
       rmdirSync(path);
       return null;

@@ -68,7 +68,7 @@ export default async function plugin(bb: BbPluginApi) {
   async function validateLinks(ids: string[]) {
     if (new Set(ids).size !== ids.length) throw new Error("A project can only be linked once");
     const projects = await bb.sdk.projects.list();
-    const legacyHomes = new Set(store.list().map((bot) => bot.legacyHomeProjectId));
+    const legacyHomes = store.legacyHomes();
     for (const id of ids) {
       if (!projects.some((project) => project.id === id && project.kind === "standard") || legacyHomes.has(id)) throw new Error("Link an existing work project, not a legacy bot home");
     }
@@ -136,8 +136,6 @@ export default async function plugin(bb: BbPluginApi) {
   }
   function deleteBot(botId: string): Promise<BotDeleteResult> {
     return serial("registry", () => serial(botId, async () => {
-      // Let an in-flight legacy import finish so it cannot recreate this bot.
-      await importLegacy();
       const bot = store.require(botId);
       const busy = ((await liveThreadsByBot(bb, store, resolveOwner)).get(botId) ?? []).filter((thread) => ["working", "waiting"].includes(threadStatus(thread)));
       if (busy.length) throw new Error(`${bot.name} has running work in ${busy.map((thread) => thread.id).join(", ")}. Stop it or let it finish, then delete the bot.`);
@@ -173,7 +171,7 @@ export default async function plugin(bb: BbPluginApi) {
       let projectToJoin: string | null = null;
       if (atCreation || thread.status === "pending") {
         const projects = await bb.sdk.projects.list();
-        const legacyHome = store.list().some((bot) => bot.legacyHomeProjectId === thread.projectId);
+        const legacyHome = store.legacyHomes().has(thread.projectId);
         if (!legacyHome && projects.some((project) => project.id === thread.projectId && project.kind === "standard")) projectToJoin = thread.projectId;
       }
       const adopted = store.adoptInherited(thread.id, inherited, projectToJoin);
@@ -194,7 +192,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   async function projectView(bot: BotMetadata, currentProjectId?: string): Promise<StateView> {
     const projects = await bb.sdk.projects.list({ includePersonal: true });
-    const legacyHomes = new Set(store.list().map((entry) => entry.legacyHomeProjectId));
+    const legacyHomes = store.legacyHomes();
     const ownership = (id: string) => { const entry = store.projectOwner(id); return { ownerBotId: entry?.botId ?? null, ownerName: entry ? store.require(entry.botId).name : null }; };
     const available = projects.filter((project) => project.kind === "standard" && !legacyHomes.has(project.id)).map((project) => ({ id: project.id, name: project.name, ...ownership(project.id) }));
     const current = projects.find((project) => project.id === currentProjectId);
@@ -305,15 +303,15 @@ export default async function plugin(bb: BbPluginApi) {
     project_browse: ({ hostId, path }) => browseProjectDirectory(bb, { hostId, path }),
     project_create: (input) => serial("project-create", () => serial(`project-create:${input.requestId}`, () => createWorkProject(bb, store, input))),
     bots_list: async () => {
-      const warnings = await importLegacy();
-      // A queued prepare can run after a concurrent delete.
-      await Promise.all(store.list().map((bot) => serial(bot.id, async () => { if (store.get(bot.id)) await state.prepare(bot.id); })));
+      // An import that overlaps a delete could recreate the deleted bot.
+      const warnings = await serial("registry", importLegacy);
+      await Promise.all(store.list().map((bot) => serial(bot.id, () => state.prepare(bot.id))));
       const [hosts, projects] = await Promise.all([bb.sdk.hosts.list(), bb.sdk.projects.list({ includePersonal: true })]);
       const personal = projects.find((project) => project.kind === "personal");
       if (!personal) throw new Error("BB's personal project is unavailable");
       personalId = personal.id;
       const bots = store.list();
-      const legacyHomes = new Set(bots.map((bot) => bot.legacyHomeProjectId));
+      const legacyHomes = store.legacyHomes();
       return { bots, projectOwners: store.projectOwners().map(({ projectId, botId }) => ({ projectId, botId })), warnings: [...warnings, ...state.warnings()], personalProjectId: personalId, threadBindings: store.bindings(), sections: store.sections(), hosts: hosts.map((host) => ({ id: host.id, name: host.name, connected: host.status === "connected" })), projects: projects.filter((project) => project.kind === "standard" && !legacyHomes.has(project.id)).map((project) => ({ id: project.id, name: project.name })) };
     },
     bot_create: createBot,
