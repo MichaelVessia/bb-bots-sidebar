@@ -419,7 +419,15 @@ export default async function plugin(bb: BbPluginApi) {
       const mains = bots.filter((bot) => taskBots.has(bot.id)).map((bot) => bot.mainThreadId);
       const threadIds = [...new Set([...list.flatMap((task) => [task.threadId, task.askThreadId]), ...mains].filter((threadId): threadId is string => Boolean(threadId)))];
       const owners = await Promise.all(threadIds.map(async (threadId) => [threadId, await resolveOwner(threadId, false).catch(() => null)] as const));
-      return { tasks: list, bots: bots.map(({ id, name, role, avatar, mainThreadId }) => ({ id, name, role, avatar, mainThreadId })), threadBots: Object.fromEntries(owners.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))) };
+      const archived = await Promise.all(threadIds.map(async (threadId) => {
+        const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
+        return thread && (thread.archivedAt || thread.deletedAt) ? threadId : null;
+      }));
+      return {
+        tasks: list, bots: bots.map(({ id, name, role, avatar, mainThreadId }) => ({ id, name, role, avatar, mainThreadId })),
+        threadBots: Object.fromEntries(owners.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))),
+        archivedThreadIds: archived.filter((threadId): threadId is string => Boolean(threadId)),
+      };
     },
     task_set_status: async ({ taskId, status, waitingOn, waitingFor, nextStep, outcome }) => {
       const current = tasks.get(taskId);

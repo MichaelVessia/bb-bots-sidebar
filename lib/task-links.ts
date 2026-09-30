@@ -25,7 +25,16 @@ export function taskLinkLabel(value: string): { kind: TaskLinkKind; label: strin
   return { kind: "link", label: url.hostname };
 }
 
-// Card summaries read as prose; raw conversation IDs (thr_…) belong to the thread links.
-export function withoutThreadIds(text: string): string {
-  return text.replace(/\s*\((?:@thread:)?thr_[a-z0-9]{6,}\)|\s*(?:@thread:)?\bthr_[a-z0-9]{6,}\b/gi, "").replace(/^\s*[:,;-]\s*/, "").replace(/[ \t]{2,}/g, " ").trim();
+// Card text reads as prose: a raw conversation ID (thr_…) becomes a readable label.
+// Known IDs map to their role ("worker thread"); others read as "another thread".
+// After "Worker"/"Owner"/"Main" the ID becomes "thread"; after "thread" it is dropped.
+export function withThreadLabels(text: string, labels: Readonly<Record<string, string>> = {}): string {
+  if (!/thr_[a-z0-9]{6,}/i.test(text)) return text;
+  return text.replace(/(?:@thread:)?\bthr_[a-z0-9]{6,}\b/gi, (match, offset: number) => {
+    const before = text.slice(0, offset);
+    if (/\b(?:thread|conversation)\s+$/i.test(before)) return "";
+    if (/\b(?:worker|owner|main)\s+$/i.test(before)) return "thread";
+    const label = labels[match.replace(/^@thread:/i, "")] ?? "another thread";
+    return /^\s*$|[.!?]\s+$/.test(before) ? label[0]!.toUpperCase() + label.slice(1) : label;
+  }).replace(/[ \t]+([:,.;)])/g, "$1").replace(/[ \t]{2,}/g, " ");
 }

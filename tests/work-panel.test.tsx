@@ -6,7 +6,7 @@ import type { BotTask } from "../contract";
 import { TASKS_CHANGED } from "../contract";
 import { askQuestion, queueAskPrefill, takeAskPrefill } from "../lib/ask-prefill";
 import { relativeTime } from "../lib/relative-time";
-import { taskLinkLabel, withoutThreadIds } from "../lib/task-links";
+import { taskLinkLabel, withThreadLabels } from "../lib/task-links";
 import { bot, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
@@ -23,9 +23,9 @@ function task(id: string, status: BotTask["status"], overrides: Partial<BotTask>
   };
 }
 type StatusInput = { taskId: string; status: BotTask["status"]; waitingOn?: BotTask["waitingOn"]; waitingFor?: string; nextStep?: string; outcome?: string };
-function mount(tasks: BotTask[], acknowledge?: (input: { taskId: string; acknowledged: boolean }) => BotTask, setStatus?: (input: StatusInput) => BotTask) {
+function mount(tasks: BotTask[], acknowledge?: (input: { taskId: string; acknowledged: boolean }) => BotTask, setStatus?: (input: StatusInput) => BotTask, archivedThreadIds: string[] = []) {
   const panel = app.threadPanelActions.find((entry) => entry.id === "work")!;
-  const view = { tasks, bots: [{ id: bot.id, name: bot.name, role: bot.role, avatar: bot.avatar, mainThreadId: "main" }, orchestrator], threadBots: { worker: bot.id, main: bot.id, orch: orchestrator.id } };
+  const view = { tasks, bots: [{ id: bot.id, name: bot.name, role: bot.role, avatar: bot.avatar, mainThreadId: "main" }, orchestrator], threadBots: { worker: bot.id, main: bot.id, orch: orchestrator.id }, archivedThreadIds };
   const threads = [thread("worker", 1, { title: "Runner audit", hasPendingInteraction: true }), thread("main", 1, { title: "Test bot main" }), thread("orch", 1, { title: "Orchestrator main" })];
   const slot = renderSlot(panel, { threadId: "current", params: null }, {
     rpc: { tasks_list: () => view, task_acknowledge: (input: unknown) => acknowledge!(input as { taskId: string; acknowledged: boolean }),
@@ -271,7 +271,7 @@ it("shows state, next owner, next action, and one-click links on a collapsed car
   const row = (await slot.findByText("Await review")).closest("li")!;
   expect(row.querySelector(".work-status")!.textContent).toBe("Waiting on Jordan");
   expect(row.textContent).toContain("Test bot");
-  expect(row.querySelector(".work-summary")!.textContent).toBe("Next: Worker: Jordan re-reviews PR #5914.");
+  expect(row.querySelector(".work-summary")!.textContent).toBe("Next: Worker thread: Jordan re-reviews PR #5914 (another thread).");
   expect(row.textContent).not.toMatch(/thr_/);
   expect(within(row).queryByRole("button", { name: /^Move/ })).toBeNull();
   // PR and proof links open outside BB and look unlike thread links.
@@ -280,7 +280,7 @@ it("shows state, next owner, next action, and one-click links on a collapsed car
   expect(pr.textContent).toBe("PR #5914");
   expect(pr.className).toContain("border");
   expect(within(row).getByRole("link", { name: "Link acme.pitch.example.com, opens outside BB" })).toBeTruthy();
-  const worker = within(row).getByRole("button", { name: "Open Worker thread: Runner audit" });
+  const worker = within(row).getByRole("button", { name: "Open worker thread: Runner audit" });
   const owner = within(row).getByRole("button", { name: "Open Test bot's owner thread: Test bot main" });
   expect([chipLabel(worker), chipLabel(owner)]).toEqual(["Worker thread", "Owner thread"]);
   expect(worker.className).toContain("bg-state-hover");
@@ -322,7 +322,7 @@ it("keeps Acknowledge visible on a collapsed new result and never starts a drag 
   const row = (await slot.findByText("Fresh result")).closest("li")!;
   expect(row.querySelector(".work-status")!.textContent).toBe("New result");
   expect(within(row).getByRole("button", { name: "Acknowledge" })).toBeTruthy();
-  for (const target of [within(row).getByRole("link"), within(row).getByRole("button", { name: /Worker thread/ }), within(row).getByRole("button", { name: "Acknowledge" })]) {
+  for (const target of [within(row).getByRole("link"), within(row).getByRole("button", { name: /worker thread/ }), within(row).getByRole("button", { name: "Acknowledge" })]) {
     fireEvent.pointerDown(target);
     const transfer = dataTransfer();
     fireEvent.dragStart(target, { dataTransfer: transfer });
@@ -337,11 +337,51 @@ it("keeps Acknowledge visible on a collapsed new result and never starts a drag 
   expect(row.getAttribute("data-dragging")).toBe("true");
 });
 
-it("labels links compactly and strips raw conversation IDs from summaries", () => {
+it("labels links compactly and turns raw conversation IDs into readable labels", () => {
   expect(taskLinkLabel("https://github.com/acme/web/commit/7e37873abcdef")).toEqual({ kind: "link", label: "web@7e37873" });
   expect(taskLinkLabel("https://github.com/acme/web/actions/runs/36595800037")).toEqual({ kind: "link", label: "web CI run" });
-  expect(withoutThreadIds("Worker thr_gk39jiiy9k: finish the build")).toBe("Worker: finish the build");
-  expect(withoutThreadIds("thr_abcdef12 owns it (see @thread:thr_zzzzzz99).")).toBe("owns it (see).");
-  expect(withoutThreadIds("Keep (thr_abcdef12) out")).toBe("Keep out");
-  expect(withoutThreadIds("No IDs here")).toBe("No IDs here");
+  const labels = { thr_worker01: "worker thread" };
+  expect(withThreadLabels("Worker thr_gk39jiiy9k: finish the build", labels)).toBe("Worker thread: finish the build");
+  expect(withThreadLabels("thr_worker01 owns it (see @thread:thr_zzzzzz99).", labels)).toBe("Worker thread owns it (see another thread).");
+  expect(withThreadLabels("See thr_abcdef12 for details. thr_worker01 reports.", labels)).toBe("See another thread for details. Worker thread reports.");
+  expect(withThreadLabels("Ask in thread thr_abcdef12 today", labels)).toBe("Ask in thread today");
+  expect(withThreadLabels("Spacing : kept without IDs")).toBe("Spacing : kept without IDs");
 });
+
+it("keeps the full expanded text selectable and outside the toggle's accessible name", async () => {
+  const long = task("sel", "now", { title: "Selectable", nextStep: "Line one\nsee thr_abcdef12 for details" });
+  const { slot } = mount([long]);
+  const toggle = await slot.findByRole("button", { name: /Selectable\. Now\. Expand/ });
+  const row = toggle.closest("li")!;
+  const summary = row.querySelector<HTMLElement>(".work-summary")!;
+  expect(toggle.contains(summary)).toBe(false);
+  expect(toggle.hasAttribute("aria-describedby")).toBe(false);
+  expect(summary.textContent).toBe("Next: Line one\nsee another thread for details");
+  // A click on the clamped text expands the card; the expanded text is selectable and the card drags by its header.
+  expect(row.getAttribute("draggable")).toBe("true");
+  fireEvent.click(summary);
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(summary.className).toContain("select-text");
+  expect(summary.className).not.toContain("line-clamp");
+  expect(row.getAttribute("draggable")).toBe("false");
+  expect(row.querySelector(".work-card-header")!.getAttribute("draggable")).toBe("true");
+  fireEvent.click(summary);
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+});
+
+it("marks archived threads, names repositories only when PRs span several, and sizes touch targets at every width", async () => {
+  const multi = task("multi", "now", { title: "Two repos", threadId: "gone", links: ["https://github.com/acme/web/pull/5", "https://github.com/acme/api/pull/7"] });
+  const single = task("single", "now", { title: "One repo", links: ["https://github.com/acme/web/pull/5", "https://github.com/acme/web/pull/6"] });
+  const { slot } = mount([multi, single], undefined, undefined, ["gone"]);
+  const two = (await slot.findByText("Two repos")).closest("li")!;
+  expect(within(two).getAllByRole("link").map((link) => link.textContent)).toEqual(["PR web#5", "PR api#7"]);
+  expect(within(slot.getByText("One repo").closest("li")!).getAllByRole("link").map((link) => link.textContent)).toEqual(["PR #5", "PR #6"]);
+  const archived = within(two).getByRole("button", { name: "Open worker thread (archived)" });
+  expect(archived.textContent).toBe("Worker thread(archived)");
+  for (const target of [archived, within(two).getAllByRole("link")[0]!, within(two).getByRole("button", { name: /Actions for Two repos/ })]) {
+    expect(target.className).toContain("pointer-coarse:h-9");
+    expect(target.className).not.toContain("max-md:");
+  }
+  expect(two.querySelector(".work-card-toggle span.block")!.className).toContain("break-words");
+});
+

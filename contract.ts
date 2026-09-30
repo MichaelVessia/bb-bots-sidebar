@@ -167,7 +167,8 @@ export const rpcContract = defineRpcContract({
   state_apply: { input: z.object({ botId: id, change: stateMutationSchema }).strict(), output: stateMutationResultSchema },
   // Public bot fields only: the Work view never receives SOUL, memory, or settings.
   // threadBots maps task-linked conversations to their bots for labels only.
-  tasks_list: { input: z.null(), output: z.object({ tasks: z.array(taskSchema), bots: z.array(taskBotSchema), threadBots: z.record(id, id) }).strict() },
+  // archivedThreadIds names linked conversations that are archived or deleted, so a link can say so.
+  tasks_list: { input: z.null(), output: z.object({ tasks: z.array(taskSchema), bots: z.array(taskBotSchema), threadBots: z.record(id, id), archivedThreadIds: z.array(id) }).strict() },
   // Michael's manual status/owner change from the panel. Waiting needs an owner.
   // Michael's board move or note edit. Notes are optional; an omitted waiting owner
   // keeps the current one, or becomes "other" for a task entering Waiting.

@@ -147,6 +147,10 @@ describe("owner threads", () => {
     host.store.save({ ...host.store.require(bot.id), mainThreadId: "other" });
     const foreign = await host.harness.behavior.callRpc("tasks_list", null) as { threadBots: Record<string, string> };
     expect(foreign.threadBots.other).toBeUndefined();
+    expect((foreign as unknown as { archivedThreadIds: string[] }).archivedThreadIds).toEqual([]);
+    host.threads.set("worker", makeThreadResponse({ id: "worker", projectId: "project", archivedAt: 5 }));
+    const archived = await host.harness.behavior.callRpc("tasks_list", null) as { archivedThreadIds: string[] };
+    expect(archived.archivedThreadIds).toEqual(["worker"]);
   });
 });
 
