@@ -12,7 +12,7 @@ export type BotProjectContext = {
 export function botProjectContext(bot: BotMetadata, project: Project, store: BotStore): BotProjectContext {
   const base = { id: project.id, name: project.name, ownerBotId: null, ownerName: null };
   if (project.kind === "personal") return { ...base, role: "personal" };
-  if (store.list().some((entry) => entry.legacyHomeProjectId === project.id)) return { ...base, role: "legacy-home" };
+  if (store.legacyHomes().has(project.id)) return { ...base, role: "legacy-home" };
   const owner = store.projectOwner(project.id);
   return {
     ...base,

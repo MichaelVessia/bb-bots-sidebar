@@ -1,13 +1,14 @@
 import type { BbPluginApi, PluginCliContext } from "@get-bb/plugin-sdk";
-import { botCreateRequestSchema, type BotCreateRequest, type BotMetadata } from "../contract";
+import { botCreateRequestSchema, type BotCreateRequest, type BotDeleteResult, type BotMetadata } from "../contract";
 import type { BotStore } from "./bot-store";
-import { listBotConversations } from "./bot-conversations";
+import { listBotConversations, liveThreadsByBot, threadStatus, type BotStatus } from "./bot-conversations";
 import { conversationRoots, orderConversations } from "./conversation-order";
 import { runTaskCommand, TASK_USAGE, type TaskStore } from "./bot-tasks";
 
 const USAGE = `bb bots list [--json] [--limit 1-100] [--offset N]
 bb bots message <bot-id-or-exact-name> <message> [--thread <conversation-id>] [--json]
 bb bots create <name> [--role <role>] [--soul <identity>] [--project <project-id> [--own]] [--host <host-id>] [--json]
+bb bots delete <bot-id> --yes [--json]
 
 Messages go to the bot's selected main conversation by default and queue while it is busy.
 Without a selected main, they go to its first visible conversation. An unavailable, archived,
@@ -19,6 +20,9 @@ List output contains public bot metadata, never private state.
 Create when the user asks for a bot. --soul sets SOUL.md (max 4096 characters). --project joins a
 work project; add --own only when asked to route its new threads to the bot. Appearance is random;
 the machine defaults to the first connected one. The new bot starts with no conversations.
+Delete only when the user asks. It needs the exact bot ID and --yes, and refuses while the bot has
+running work. Conversations stay and move to Chats; projects and their files are unchanged.
+The bot's SOUL.md, MEMORY.md, and settings are deleted permanently.
 
 ${TASK_USAGE}`;
 const MESSAGE_MAX_CHARS = 12000;
@@ -26,12 +30,12 @@ const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const printable = (value: string) => value.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
 const CREATE_OPTIONS: Record<string, "role" | "soul" | "projectId" | "hostId"> = { "--role": "role", "--soul": "soul", "--project": "projectId", "--host": "hostId" };
-type Options = { command: "list" | "message" | "create"; json: boolean; limit: number; offset: number; threadId?: string; own: boolean; create: Partial<Record<"role" | "soul" | "projectId" | "hostId", string>>; positional: string[] };
+type Options = { command: "list" | "message" | "create" | "delete"; json: boolean; yes: boolean; limit: number; offset: number; threadId?: string; own: boolean; create: Partial<Record<"role" | "soul" | "projectId" | "hostId", string>>; positional: string[] };
 function parse(argv: string[]): Options | null {
   if (!argv.length || argv[0] === "--help" || argv[0] === "help") return null;
   const command = argv[0];
-  if (command !== "list" && command !== "message" && command !== "create") throw new Error(`Unknown command: ${command}\n${USAGE}`);
-  const options: Options = { command, json: false, limit: 50, offset: 0, own: false, create: {}, positional: [] };
+  if (command !== "list" && command !== "message" && command !== "create" && command !== "delete") throw new Error(`Unknown command: ${command}\n${USAGE}`);
+  const options: Options = { command, json: false, yes: false, limit: 50, offset: 0, own: false, create: {}, positional: [] };
   const seen = new Set<string>();
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -42,6 +46,7 @@ function parse(argv: string[]): Options | null {
     seen.add(arg);
     if (arg === "--json") { options.json = true; continue; }
     if (command === "create" && arg === "--own") { options.own = true; continue; }
+    if (command === "delete" && arg === "--yes") { options.yes = true; continue; }
     if (!((command === "list" && ["--limit", "--offset"].includes(arg)) || (command === "message" && arg === "--thread") || (command === "create" && Object.hasOwn(CREATE_OPTIONS, arg)))) throw new Error(`Unknown option: ${arg}`);
     const value = argv[++i];
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
@@ -57,6 +62,7 @@ function parse(argv: string[]): Options | null {
   if (command === "list" && options.positional.length) throw new Error(`Unexpected list arguments\n${USAGE}`);
   if (command === "message" && options.positional.length !== 2) throw new Error(`Supply one bot and one quoted message\n${USAGE}`);
   if (command === "create" && options.positional.length !== 1) throw new Error(`Supply one quoted bot name\n${USAGE}`);
+  if (command === "delete" && options.positional.length !== 1) throw new Error(`Supply one bot ID\n${USAGE}`);
   return options;
 }
 
@@ -105,13 +111,14 @@ export function frameBotMessage(sender: Sender, message: string): string {
   ].join("\n");
 }
 
-export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: (threadId: string, persist?: boolean) => Promise<string | null>, createBot: (request: BotCreateRequest) => Promise<BotMetadata>, tasks: TaskStore, publishTasks: () => void) {
+export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: (threadId: string, persist?: boolean) => Promise<string | null>, createBot: (request: BotCreateRequest) => Promise<BotMetadata>, deleteBot: (botId: string) => Promise<BotDeleteResult>, tasks: TaskStore, publishTasks: () => void) {
   bb.cli.register({
-    name: "bots", summary: "List and create bots, and send attributed asynchronous messages to their conversations",
+    name: "bots", summary: "List, create, and delete bots, and send attributed asynchronous messages to their conversations",
     commands: [
       { name: "list", summary: "List bot IDs, activity, visibility, and owned/joined project names without private state", usage: "bb bots list [--json] [--limit 1-100] [--offset N]" },
       { name: "message", summary: "Message a bot's main conversation, or reply to one of its conversations; queues while busy", usage: "bb bots message <bot-id-or-exact-name> <message> [--thread <conversation-id>] [--json]" },
       { name: "create", summary: "Create a bot with a name, role, SOUL identity, and optional project to join or own", usage: "bb bots create <name> [--role <role>] [--soul <identity>] [--project <project-id> [--own]] [--host <host-id>] [--json]" },
+      { name: "delete", summary: "Delete a bot and its private state; its conversations move to Chats and its projects stay", usage: "bb bots delete <bot-id> --yes [--json]" },
       { name: "task", summary: "List, create, update, or remove Work view task records (Now, Waiting on Michael, Done)", usage: "bb bots task list|set|remove ... (bb bots task --help)" },
     ],
     async run(argv, ctx) {
@@ -154,6 +161,25 @@ export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: 
             "It has no conversations yet. Start one with the bot's + in the sidebar.",
           ].join("\n") };
         }
+        if (options.command === "delete") {
+          const bot = store.get(options.positional[0]!);
+          if (!bot) throw new Error("Bot not found. Use an exact bot ID from bb bots list.");
+          if (!options.yes) {
+            const owned = store.ownedProjects(bot.id).length;
+            const conversations = store.bindings().filter((binding) => binding.botId === bot.id).length;
+            throw new Error([
+              `Deleting ${printable(bot.name)} (${bot.id}) permanently removes its SOUL.md, MEMORY.md, and settings.`,
+              `${conversations} bound conversation(s) stay and move to Chats. It releases ${owned} owned and leaves ${bot.linkedProjectIds.length - owned} joined project(s); project files are unchanged.`,
+              `Rerun with --yes to delete: bb bots delete ${shellQuote(bot.id)} --yes`,
+            ].join("\n"));
+          }
+          const result = await deleteBot(bot.id);
+          return { exitCode: 0, stdout: options.json ? JSON.stringify(result) : [
+            `Deleted ${printable(result.name)} (${result.botId}).`,
+            `${result.detachedConversationIds.length} conversation(s) moved to Chats. Released ${result.releasedProjectIds.length} owned and left ${result.leftProjectIds.length} joined project(s).`,
+            ...result.warnings,
+          ].join("\n") };
+        }
         const [selector, raw] = options.positional as [string, string];
         const message = raw.trim();
         if (!message || message.length > MESSAGE_MAX_CHARS) throw new Error(`Message must contain 1-${MESSAGE_MAX_CHARS} characters`);
@@ -181,45 +207,17 @@ export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: 
     },
   });
   async function listActivity(ctx: PluginCliContext) {
-    type Status = "idle" | "working" | "waiting" | "error";
     const rank = { idle: 0, error: 1, working: 2, waiting: 3 };
-    const result = new Map<string, Status>();
-    const threads: Awaited<ReturnType<typeof bb.sdk.threads.list>> = [];
-    for (let offset = 0; ; offset += 100) {
-      ctx.signal?.throwIfAborted();
-      const page = await bb.sdk.threads.list({ archived: false, includeHidden: true, offset, limit: 100, signal: ctx.signal });
-      threads.push(...page);
-      if (page.length < 100) break;
-    }
-    const byId = new Map(threads.map(thread => [thread.id, thread]));
-    const direct = new Map(store.bindings().map(binding => [binding.threadId, binding.botId]));
-    const botRows = new Map<string, typeof threads>();
-    const owners = new Map<string, string>();
-    for (const thread of threads) {
-      if (thread.archivedAt || thread.deletedAt) continue;
-      let id: string | null = thread.id;
-      let owner: string | undefined;
-      const visited = new Set<string>();
-      while (id && !visited.has(id)) {
-        visited.add(id);
-        owner = direct.get(id);
-        if (owner) break;
-        const ancestor = byId.get(id);
-        if (!ancestor) { owner = await resolveOwner(id, false) ?? undefined; break; }
-        id = ancestor.parentThreadId ?? ancestor.sourceThreadId;
+    const result = new Map<string, BotStatus>();
+    const owned = await liveThreadsByBot(bb, store, resolveOwner, ctx.signal);
+    for (const [owner, threads] of owned) {
+      for (const thread of threads) {
+        const status = threadStatus(thread);
+        if (rank[status] > rank[result.get(owner) ?? "idle"]) result.set(owner, status);
       }
-      if (!owner) continue;
-      owners.set(thread.id, owner);
-      if (thread.visibility !== "hidden") {
-        const rows = botRows.get(owner) ?? []; rows.push(thread); botRows.set(owner, rows);
-      }
-      const runtime = thread.runtime.displayStatus;
-      const status: Status = thread.hasPendingInteraction || runtime === "waiting-for-host" || runtime === "host-reconnecting" ? "waiting"
-        : ["active", "pending", "provisioning", "starting", "stopping"].includes(runtime) || Object.values(thread.activity ?? {}).some(count => count > 0) ? "working"
-        : runtime === "error" || thread.queuedWork === "failed" ? "error" : "idle";
-      if (rank[status] > rank[result.get(owner) ?? "idle"]) result.set(owner, status);
     }
-    const firstThreads = new Map(store.list().map(bot => [bot.id, conversationRoots(orderConversations(botRows.get(bot.id) ?? [], bot.threadOrder))[0]?.id]));
+    const firstThreads = new Map(store.list().map(bot => [bot.id, conversationRoots(orderConversations((owned.get(bot.id) ?? []).filter(thread => thread.visibility !== "hidden"), bot.threadOrder))[0]?.id]));
+    const owners = new Map([...owned].flatMap(([owner, threads]) => threads.map(thread => [thread.id, owner] as const)));
     return { activity: result, firstThreads, owners };
   }
   async function resolveSender(ctx: PluginCliContext): Promise<Sender> {
