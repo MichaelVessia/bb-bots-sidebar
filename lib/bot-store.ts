@@ -128,6 +128,24 @@ export function createBotStore(bb: BbPluginApi) {
         return project.botId;
       }).immediate();
     },
+    // Conversations and projects outlive the bot: drop only its rows, so its
+    // conversations become unassigned Chats and its projects become unowned.
+    remove(id: string) {
+      return db.transaction(() => {
+        const bot = get(id); if (!bot) throw new Error("Bot no longer exists");
+        const releasedProjectIds = ownedProjects(id);
+        const detachedThreadIds = (db.prepare("SELECT thread_id FROM bot_threads WHERE bot_id = ? ORDER BY thread_id").all(id) as { thread_id: string }[]).map((row) => row.thread_id);
+        db.prepare("DELETE FROM bot_threads WHERE bot_id = ?").run(id);
+        db.prepare("DELETE FROM bot_starts WHERE bot_id = ?").run(id);
+        db.prepare("DELETE FROM bot_project_owners WHERE bot_id = ?").run(id);
+        for (const key of [`legacy-state:${id}`, `legacy-record:${id}`, `private-state-warning:${id}`]) db.prepare("DELETE FROM bot_state WHERE key = ?").run(key);
+        // The v1 importer recreates a missing bot for any unfinished snapshot project.
+        const snapshot = state<{ done: string[] }>("legacy-snapshot");
+        if (bot.legacyProjectId && snapshot && !snapshot.done.includes(bot.legacyProjectId)) setState("legacy-snapshot", { ...snapshot, done: [...snapshot.done, bot.legacyProjectId] });
+        db.prepare("DELETE FROM bots WHERE id = ?").run(id);
+        return { bot, releasedProjectIds, detachedThreadIds };
+      }).immediate();
+    },
     databasePath: db.name,
     legacySource(id: string): LegacyBotStateSource | null {
       const stored = state<LegacyBotStateSource>(`legacy-state:${id}`);

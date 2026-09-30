@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
-import { rpcContract, stateReadSchema, stateMutationSchema, stateMutationToolSchema, stateMutationResultSchema, normalizeStateMutation, botCreateRequestSchema, botCreateToolSchema, type BotCreateRequest, type BotMetadata, type BotStateMutation } from "./contract";
+import { rpcContract, stateReadSchema, stateMutationSchema, stateMutationToolSchema, stateMutationResultSchema, normalizeStateMutation, botCreateRequestSchema, botCreateToolSchema, type BotCreateRequest, type BotDeleteResult, type BotMetadata, type BotStateMutation } from "./contract";
 import { createBotStore, EMPTY_HASHES, nextTimestamp } from "./lib/bot-store";
 import { applyState, BotStateConflictError, createPrivateBotState, stateContent } from "./lib/private-state";
 import { memoryFacts, mutateStateDocument } from "./lib/state-actions";
@@ -10,7 +10,7 @@ import { browseProjectDirectory, createWorkProject } from "./lib/project-creatio
 import { createdBotSummary, registerBotsCli } from "./lib/bots-cli";
 import { randomAvatar } from "./lib/appearance";
 import { registerBotMentions } from "./lib/bot-mentions";
-import { listBotConversations } from "./lib/bot-conversations";
+import { listBotConversations, liveThreadsByBot, threadStatus } from "./lib/bot-conversations";
 import { botProjectContext } from "./lib/project-context";
 import { BOT_GUIDANCE, botInstructions } from "./lib/bot-instructions";
 import { MEMORY_MAX_CHARS, validateMemory } from "./lib/memory-limit";
@@ -133,6 +133,24 @@ export default async function plugin(bb: BbPluginApi) {
     if (!machine) throw new Error("No enrolled execution machine is available");
     const projects = projectId ? [projectId] : [];
     return createBot({ name, role, soul, hostId: machine, avatar: randomAvatar(), sectionId: null, linkedProjectIds: projects, ownedProjectIds: own ? projects : [] });
+  }
+  function deleteBot(botId: string): Promise<BotDeleteResult> {
+    return serial("registry", () => serial(botId, async () => {
+      // Let an in-flight legacy import finish so it cannot recreate this bot.
+      await importLegacy();
+      const bot = store.require(botId);
+      const busy = ((await liveThreadsByBot(bb, store, resolveOwner)).get(botId) ?? []).filter((thread) => ["working", "waiting"].includes(threadStatus(thread)));
+      if (busy.length) throw new Error(`${bot.name} has running work in ${busy.map((thread) => thread.id).join(", ")}. Stop it or let it finish, then delete the bot.`);
+      // Exports are derived from SQLite. Remove them first: if the row delete
+      // then fails, the next prepare rewrites them from the surviving row.
+      const exportWarning = state.removeExports(botId);
+      const removed = store.remove(botId);
+      publish();
+      return {
+        botId, name: removed.bot.name, detachedConversationIds: removed.detachedThreadIds, releasedProjectIds: removed.releasedProjectIds,
+        leftProjectIds: removed.bot.linkedProjectIds.filter((id) => !removed.releasedProjectIds.includes(id)), warnings: exportWarning ? [exportWarning] : [],
+      };
+    }));
   }
   async function updateProjectRole(botId: string, action: "join" | "leave" | "own" | "release", projectId: string) {
     return serial("registry", () => serial(botId, async () => {
@@ -280,7 +298,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.created", async ({ thread }) => { await routeNewThread(thread, true); });
 
-  registerBotsCli(bb, store, resolveOwner, createBotFromRequest);
+  registerBotsCli(bb, store, resolveOwner, createBotFromRequest, deleteBot);
   registerBotMentions(bb, store);
 
   bb.rpc.register(rpcContract, {
@@ -288,7 +306,8 @@ export default async function plugin(bb: BbPluginApi) {
     project_create: (input) => serial("project-create", () => serial(`project-create:${input.requestId}`, () => createWorkProject(bb, store, input))),
     bots_list: async () => {
       const warnings = await importLegacy();
-      await Promise.all(store.list().map((bot) => serial(bot.id, () => state.prepare(bot.id))));
+      // A queued prepare can run after a concurrent delete.
+      await Promise.all(store.list().map((bot) => serial(bot.id, async () => { if (store.get(bot.id)) await state.prepare(bot.id); })));
       const [hosts, projects] = await Promise.all([bb.sdk.hosts.list(), bb.sdk.projects.list({ includePersonal: true })]);
       const personal = projects.find((project) => project.kind === "personal");
       if (!personal) throw new Error("BB's personal project is unavailable");
@@ -299,6 +318,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     bot_create: createBot,
     bot_prepare: ({ botId }) => serial(botId, () => state.prepare(botId)),
+    bot_delete: ({ botId }) => deleteBot(botId),
     bot_update: saveBotIdentity,
     bots_reorder: ({ bots: placements }) => serial("registry", async () => {
       const bots = store.list();

@@ -223,4 +223,30 @@ describe("bot creation", () => {
     expect(result).toMatchObject({ name: "Helper", role: "", ownedProjectIds: [], joinedProjectIds: [] });
     expect(host.store.require(result.botId).soul).toBe("Help.");
   });
+  it("requires an exact bot ID and --yes before deleting, and explains what stays", async () => {
+    const { host, a, run } = await setup();
+    host.store.changeProjectRole(a.id, "project", "own");
+    const preview = await run(["delete", a.id]);
+    expect(preview.exitCode).toBe(1);
+    expect(preview.stderr).toContain("permanently removes its SOUL.md, MEMORY.md, and settings");
+    expect(preview.stderr).toContain("1 bound conversation(s) stay and move to Chats. It releases 1 owned and leaves 0 joined project(s)");
+    expect(preview.stderr).toContain(`bb bots delete '${a.id}' --yes`);
+    expect((await run(["delete", a.name, "--yes"])).stderr).toContain("Use an exact bot ID");
+    expect((await run(["delete", "--yes"])).stderr).toContain("Supply one bot ID");
+    expect(host.store.get(a.id)).not.toBeNull();
+    const deleted = await run(["delete", a.id, "--yes", "--json"]);
+    expect(deleted.exitCode).toBe(0);
+    expect(JSON.parse(deleted.stdout!)).toEqual({ botId: a.id, name: "Atlas", detachedConversationIds: [a.id], releasedProjectIds: ["project"], leftProjectIds: [], warnings: [] });
+    expect(host.store.get(a.id)).toBeNull();
+    expect(host.store.owner(a.id)).toBeNull();
+    expect(host.threads.has(a.id)).toBe(true);
+    expect((await run(["delete", a.id, "--yes"])).stderr).toContain("Bot not found");
+  });
+  it("refuses to delete a bot from its own running conversation", async () => {
+    const { host, a, run } = await setup();
+    host.threads.set(a.id, makeThreadResponse({ id: a.id, projectId: "project", runtime: { displayStatus: "active", hostReconnectGraceExpiresAt: null } }));
+    const result = await run(["delete", a.id, "--yes"], { threadId: a.id });
+    expect(result.stderr).toContain(`Atlas has running work in ${a.id}`);
+    expect(host.store.get(a.id)).not.toBeNull();
+  });
 });
