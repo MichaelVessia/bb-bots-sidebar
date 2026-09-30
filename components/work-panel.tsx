@@ -98,13 +98,17 @@ function StatusMenu({ task, onChange, onEdit }: { task: BotTask; onChange: (chan
   </DropdownMenu.Root>;
 }
 
-type RowProps = { task: BotTask; bot: TaskBot | undefined; thread: PluginSidebarThread | undefined; now: number; onOpen: () => void; onChange: (change: StatusChange) => void; onEdit: (preset: Preset) => void; onAcknowledge?: () => void; acknowledgeLabel?: string };
-function TaskRow({ task, bot, thread, now, onOpen, onChange, onEdit, onAcknowledge, acknowledgeLabel }: RowProps) {
+type RowProps = { task: BotTask; bot: TaskBot | undefined; thread: PluginSidebarThread | undefined; now: number; onOpen: () => void; onChange: (change: StatusChange) => void; onEdit: (preset: Preset) => void; onAcknowledge?: () => void; acknowledgeLabel?: string; showLinks?: boolean };
+function TaskRow({ task, bot, thread, now, onOpen, onChange, onEdit, onAcknowledge, acknowledgeLabel, showLinks }: RowProps) {
   return <li className="work-task border-b border-border/60 last:border-b-0" data-task-id={task.id}>
     <button type="button" className="work-task-open block w-full rounded-md px-2 pt-2 pb-1 text-left hover:bg-state-hover" data-focus-key={task.id} aria-label={`${task.title}. ${statusLabel(task)}. Open details`} onClick={onOpen}>
       <span className="block text-[13px] font-medium leading-5 text-foreground">{task.title}</span>
       <span className="mt-0.5 line-clamp-2 block text-xs leading-[18px] text-foreground/85">{primaryText(task)}</span>
     </button>
+    {showLinks && task.links.length ? <p className="work-row-links flex flex-wrap gap-x-3 gap-y-0.5 px-2 pb-1 text-[11px]">{task.links.map((link) => {
+      const { kind, label } = taskLinkLabel(link);
+      return <UrlLink key={link} href={link} className="work-external-link text-foreground/85 underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground" title={link}>{kind === "pr" ? "PR " : kind === "issue" ? "Issue " : ""}{label}</UrlLink>;
+    })}</p> : null}
     {task.status === "waiting" && !waitsOnMichael(task) ? <p className="work-waiting-on px-2 pb-1 text-[11px] text-foreground/85">Waiting on <span className={task.waitingOn ? "font-medium" : "italic text-muted-foreground"}>{waitingLabel(task)}</span></p> : null}
     <div className="flex min-w-0 items-center gap-2 px-2 pb-2 text-[11px] text-muted-foreground">
       <OwnerLink task={task} bot={bot} thread={thread} />
@@ -230,7 +234,7 @@ function TaskDetail({ task, bots, threadBots, threads, now, backLabel, preset, o
     </Field>
     <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
       {askThreadId ? <Button type="button" variant="outline" size="sm" className="work-ask" onClick={() => { queueAskPrefill(askThreadId, askQuestion(task)); navigate.toThread(askThreadId); }}>Ask {askName} to explain</Button> : null}
-      {task.status === "done" ? <Button type="button" variant="ghost" size="sm" onClick={() => onAcknowledge(!task.acknowledgedAt)}>{task.acknowledgedAt ? "Return to Done" : "Acknowledge"}</Button> : null}
+      {task.status === "done" ? <Button type="button" variant={task.needsAcknowledgement ? "default" : "ghost"} size="sm" onClick={() => onAcknowledge(!task.acknowledgedAt)}>{task.acknowledgedAt ? "Mark unread" : "Acknowledge"}</Button> : null}
     </div>
     {askThreadId ? <p className="text-[11px] text-muted-foreground">Ask opens {askName}'s conversation with an unsent question about this task. You can edit it before sending.</p> : null}
   </article>;
@@ -257,9 +261,17 @@ export function WorkPanel() {
     restoreFocus.current = null;
     target.focus();
   }, [view, data]);
-  const acknowledge = (taskId: string, acknowledged: boolean) => {
+  // Acknowledging keeps the keyboard in place: focus the next unread result, else
+  // the Done toggle, once the refreshed list has moved the task into history.
+  const acknowledge = (task: BotTask, acknowledged: boolean, then?: () => void) => {
     setActionError(null);
-    rpc.call("task_acknowledge", { taskId, acknowledged }).then(refresh, (cause) => setActionError(cause instanceof Error ? cause.message : String(cause)));
+    const unread = (data?.tasks ?? []).filter((entry) => entry.status === "done" && entry.needsAcknowledgement);
+    const next = unread[unread.findIndex((entry) => entry.id === task.id) + 1] ?? unread.find((entry) => entry.id !== task.id);
+    rpc.call("task_acknowledge", { taskId: task.id, acknowledged }).then(async () => {
+      await refresh();
+      restoreFocus.current = acknowledged ? next?.id ?? "done-toggle" : task.id;
+      then?.();
+    }, (cause) => setActionError(cause instanceof Error ? cause.message : String(cause)));
   };
   const setStatus = async (taskId: string, change: StatusChange) => {
     await rpc.call("task_set_status", { taskId, ...change });
@@ -274,20 +286,22 @@ export function WorkPanel() {
   const open = (task: BotTask, from: "list" | "waiting", preset?: Preset) => { restoreFocus.current = task.id; setView({ kind: "task", taskId: task.id, from, ...(preset ? { preset } : {}) }); };
   const back = () => setView(view.kind === "task" && view.from === "waiting" ? { kind: "waiting" } : { kind: "list" });
   const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && view.kind !== "list") { event.stopPropagation(); if (view.kind === "waiting") restoreFocus.current = "waiting-heading"; back(); } };
-  const row = (task: BotTask, from: "list" | "waiting", acknowledgeLabel?: string) => <TaskRow key={task.id} task={task} bot={bots.get(task.botId)} thread={task.threadId ? threads.get(task.threadId) : undefined} now={now} onOpen={() => open(task, from)}
+  const row = (task: BotTask, from: "list" | "waiting", acknowledgeLabel?: string, showLinks = false) => <TaskRow key={task.id} task={task} bot={bots.get(task.botId)} thread={task.threadId ? threads.get(task.threadId) : undefined} now={now} onOpen={() => open(task, from)}
     onChange={(change) => quickStatus(task, change)} onEdit={(preset) => open(task, from, preset)}
-    {...(acknowledgeLabel ? { acknowledgeLabel, onAcknowledge: () => acknowledge(task.id, !task.acknowledgedAt) } : {})} />;
+    showLinks={showLinks} {...(acknowledgeLabel ? { acknowledgeLabel, onAcknowledge: () => acknowledge(task, !task.acknowledgedAt, () => setView({ kind: "list" })) } : {})} />;
 
   let body: ReactNode = null;
   if (data) {
     const waiting = data.tasks.filter(waitsOnMichael);
     const others = data.tasks.filter((task) => task.status === "waiting" && !waitsOnMichael(task));
     const active = data.tasks.filter((task) => task.status === "now");
-    const done = data.tasks.filter((task) => task.status === "done" && !task.acknowledgedAt);
-    const acknowledged = data.tasks.filter((task) => task.status === "done" && task.acknowledgedAt);
+    const unread = data.tasks.filter((task) => task.status === "done" && task.needsAcknowledgement);
+    // Done history: legacy results (never acknowledged, never unread) and acknowledged ones.
+    const done = data.tasks.filter((task) => task.status === "done" && !task.needsAcknowledgement && !task.acknowledgedAt);
+    const acknowledged = data.tasks.filter((task) => task.status === "done" && !task.needsAcknowledgement && task.acknowledgedAt);
     const task = view.kind === "task" ? data.tasks.find((entry) => entry.id === view.taskId) : undefined;
     if (view.kind === "task") {
-      body = task ? <TaskDetail task={task} bots={bots} threadBots={data.threadBots} threads={threads} now={now} backLabel={view.from === "waiting" ? "Waiting on Michael" : "Work"} preset={view.preset} onBack={back} onAcknowledge={(value) => acknowledge(task.id, value)}
+      body = task ? <TaskDetail task={task} bots={bots} threadBots={data.threadBots} threads={threads} now={now} backLabel={view.from === "waiting" ? "Waiting on Michael" : "Work"} preset={view.preset} onBack={back} onAcknowledge={(value) => acknowledge(task, value, () => setView({ kind: "list" }))}
         onSetStatus={async (change) => {
           await setStatus(task.id, change);
           // Back to the list: focus follows the task into its new section.
@@ -303,7 +317,7 @@ export function WorkPanel() {
         <h2 id="work-waiting-focused" className="text-sm font-semibold text-foreground">Waiting on Michael <span className="work-count rounded-full bg-state-active px-1.5 tabular-nums text-foreground">{waiting.length}</span></h2>
         {waiting.length ? <ul>{waiting.map((entry) => row(entry, "waiting"))}</ul> : <Missing>Nothing is waiting on you.</Missing>}
       </section>;
-    } else if (!waiting.length && !others.length && !active.length && !done.length && !acknowledged.length) {
+    } else if (!waiting.length && !unread.length && !others.length && !active.length && !done.length && !acknowledged.length) {
       body = <Missing>No tasks yet. Agents add them with <code>bb bots task set</code>.</Missing>;
     } else {
       body = <>
@@ -314,6 +328,10 @@ export function WorkPanel() {
           </button></h2>
           <ul>{waiting.map((entry) => row(entry, "list"))}</ul>
         </section> : null}
+        {unread.length ? <section aria-labelledby="work-unread" data-work-section="unread">
+          <h2 id="work-unread" className="mb-1 flex items-center gap-2 px-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Needs acknowledgement<span className="work-count rounded-full bg-state-active px-1.5 tabular-nums font-semibold text-foreground">{unread.length}</span></h2>
+          <ul>{unread.map((entry) => row(entry, "list", "Acknowledge", true))}</ul>
+        </section> : null}
         {active.length ? <section aria-labelledby="work-now" data-work-section="now">
           <h2 id="work-now" className="mb-1 flex items-center gap-2 px-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Now<span className="tabular-nums font-normal">{active.length}</span></h2>
           <ul>{active.map((entry) => row(entry, "list"))}</ul>
@@ -323,16 +341,16 @@ export function WorkPanel() {
           <ul>{others.map((entry) => row(entry, "list"))}</ul>
         </section> : null}
         {done.length || acknowledged.length ? <section aria-labelledby="work-done" data-work-section="done">
-          <h2 id="work-done"><button type="button" aria-expanded={doneOpen} aria-controls="work-done-list" className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => setDoneOpen((value) => !value)}>
+          <h2 id="work-done"><button type="button" aria-expanded={doneOpen} aria-controls="work-done-list" data-focus-key="done-toggle" className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground hover:bg-state-hover hover:text-foreground" onClick={() => setDoneOpen((value) => !value)}>
             <svg className={doneOpen ? "rotate-90" : ""} aria-hidden="true" width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m8 5 5 5-5 5" /></svg>
-            Done<span className="tabular-nums font-normal">{done.length}</span>
+            Done<span className="tabular-nums font-normal">{done.length + acknowledged.length}</span>
           </button></h2>
           <div id="work-done-list" hidden={!doneOpen}>{doneOpen ? <>
-            {done.length ? <ul>{done.slice(0, DONE_SHOWN).map((entry) => row(entry, "list", "Acknowledge"))}</ul> : <p className="px-2 py-1 text-xs text-muted-foreground">All results acknowledged.</p>}
+            {done.length ? <ul>{done.slice(0, DONE_SHOWN).map((entry) => row(entry, "list", "Acknowledge"))}</ul> : null}
             {done.length > DONE_SHOWN ? <p className="px-2 text-xs text-muted-foreground">{done.length - DONE_SHOWN} older results hidden. See bb bots task list --status done.</p> : null}
             {acknowledged.length ? <div className="mt-1">
               <button type="button" aria-expanded={historyOpen} aria-controls="work-acknowledged" className="rounded-sm px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setHistoryOpen((value) => !value)}>{historyOpen ? "Hide" : "Show"} acknowledged ({acknowledged.length})</button>
-              <ul id="work-acknowledged" hidden={!historyOpen}>{historyOpen ? acknowledged.slice(0, DONE_SHOWN).map((entry) => row(entry, "list", "Return to Done")) : null}</ul>
+              <ul id="work-acknowledged" hidden={!historyOpen}>{historyOpen ? acknowledged.slice(0, DONE_SHOWN).map((entry) => row(entry, "list", "Mark unread")) : null}</ul>
             </div> : null}
           </> : null}</div>
         </section> : null}

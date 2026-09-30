@@ -147,9 +147,15 @@ screen.
   form (Progress, Waiting on, Who, Outcome) saves only on **Save status**, then
   returns to the list with focus on the task in its new section (Done opens if needed).
   Both work fully from the keyboard; there is no drag.
-- **Done** is collapsed with its count. **Acknowledge** moves a read result out
-  of the list without deleting it; **Show acknowledged** lists them, and **Return to
-  Done** brings one back. Any later update to a task clears its acknowledgement.
+- **Needs acknowledgement** (right after Waiting on Michael) holds every new Done
+  result, and every later update to a Done task, with its count, outcome, owner, and
+  links. It stays there until you click **Acknowledge** on the row or in its detail,
+  after reading the full outcome. Focus then moves to the next unread result.
+  Results you mark Done yourself in the panel skip this section.
+- **Done** is collapsed history with its count. Results from before this section
+  existed stay there as legacy history; they were not marked acknowledged.
+  **Show acknowledged** lists read results, and **Mark unread** returns one to
+  Needs acknowledgement. Nothing is acknowledged automatically.
 
 Click a row to open its detail: the exact request, recommendation and options,
 context, last result, PR/issue sources, and the owner's conversation with its live

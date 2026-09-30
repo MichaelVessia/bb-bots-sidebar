@@ -16,7 +16,7 @@ function task(id: string, status: BotTask["status"], overrides: Partial<BotTask>
   return {
     id: `task_${id.padEnd(32, "0")}`, title: `Task ${id}`, status, botId: bot.id, threadId: null, links: [],
     nextStep: status === "done" ? "" : `Next ${id}`, outcome: status === "done" ? `Outcome ${id}` : "",
-    context: "", recommendation: "", options: [], askThreadId: null, acknowledgedAt: null,
+    context: "", recommendation: "", options: [], askThreadId: null, acknowledgedAt: null, needsAcknowledgement: false,
     waitingOn: status === "waiting" ? "michael" : null, waitingFor: "",
     createdAt: NOW - 60_000, updatedAt: NOW - 5 * 60_000, updatedByThreadId: null, ...overrides,
   };
@@ -124,17 +124,57 @@ it("fills only the matching thread draft, appending to existing text", async () 
   expect(takeAskPrefill("other")).toBe("Not for this thread");
 });
 
-it("acknowledges read Done results and keeps them in acknowledged history", async () => {
-  const done = task("d", "done");
+it("keeps legacy Done results in collapsed history, acknowledged or not", async () => {
   const calls: unknown[] = [];
-  const { slot, view } = mount([done], (input) => { calls.push(input); view.tasks[0] = { ...done, acknowledgedAt: input.acknowledged ? NOW : null }; return view.tasks[0]!; });
-  fireEvent.click(await slot.findByRole("button", { name: /Done/ }));
+  const legacy = task("d", "done");
+  const { slot, view } = mount([legacy, task("seen", "done", { acknowledgedAt: NOW })], (input) => { calls.push(input); view.tasks[0] = { ...legacy, acknowledgedAt: input.acknowledged ? NOW : null }; return view.tasks[0]!; });
+  const toggle = await slot.findByRole("button", { name: /Done/, expanded: false });
+  expect(toggle.textContent).toContain("2");
+  expect(slot.queryByRole("region", { name: /Needs acknowledgement/ })).toBeNull();
+  fireEvent.click(toggle);
   fireEvent.click(slot.getByRole("button", { name: "Acknowledge" }));
-  await slot.findByText("All results acknowledged.");
-  expect(calls).toEqual([{ taskId: done.id, acknowledged: true }]);
-  fireEvent.click(slot.getByRole("button", { name: "Show acknowledged (1)" }));
-  fireEvent.click(slot.getByRole("button", { name: "Return to Done" }));
-  expect(calls).toEqual([{ taskId: done.id, acknowledged: true }, { taskId: done.id, acknowledged: false }]);
+  await waitFor(() => expect(calls).toEqual([{ taskId: legacy.id, acknowledged: true }]));
+  await waitFor(() => expect(slot.getByRole("button", { name: "Show acknowledged (2)" })).toBeTruthy());
+});
+
+it("shows unread results prominently with count, outcome, owner, and links, and acknowledges them into history", async () => {
+  const first = task("u1", "done", { title: "C4 draft ready", needsAcknowledgement: true, outcome: "Private C4 draft saved", links: ["https://github.com/acme/app/pull/9"], threadId: "worker" });
+  const second = task("u2", "done", { title: "Second result", needsAcknowledgement: true });
+  const calls: unknown[] = [];
+  const { slot, view } = mount([first, second, decision], (input) => {
+    calls.push(input);
+    const index = view.tasks.findIndex((entry) => entry.id === input.taskId);
+    view.tasks[index] = { ...view.tasks[index]!, acknowledgedAt: input.acknowledged ? NOW : null, needsAcknowledgement: !input.acknowledged };
+    return view.tasks[index]!;
+  });
+  const unread = await slot.findByRole("region", { name: /Needs acknowledgement/ });
+  const order = Array.from(slot.container.querySelectorAll("[data-work-section]")).map((section) => section.getAttribute("data-work-section"));
+  expect(order.slice(0, 2)).toEqual(["waiting", "unread"]);
+  expect(within(unread).getByRole("heading").textContent).toBe("Needs acknowledgement2");
+  const row = within(unread).getByText("C4 draft ready").closest("li")!;
+  expect(row.textContent).toContain("Private C4 draft saved");
+  expect(within(row).getByRole("button", { name: /open Runner audit/ })).toBeTruthy();
+  expect(within(row).getByText("PR app#9").closest("a")?.getAttribute("href")).toBe("https://github.com/acme/app/pull/9");
+  expect(slot.container.querySelector('[data-focus-key="done-toggle"]')).toBeNull();
+  fireEvent.click(within(row).getByRole("button", { name: "Acknowledge" }));
+  await waitFor(() => expect(calls).toEqual([{ taskId: first.id, acknowledged: true }]));
+  // Focus moves to the next unread result; the acknowledged one leaves the section.
+  await waitFor(() => expect(document.activeElement).toBe(slot.getByRole("button", { name: /Second result\. Done\. Open details/ })));
+  expect(within(slot.getByRole("region", { name: /Needs acknowledgement/ })).queryByText("C4 draft ready")).toBeNull();
+  expect(slot.container.querySelector('[data-focus-key="done-toggle"]')!.textContent).toContain("1");
+});
+
+it("lets Michael read the full outcome in detail before acknowledging, then returns to the list", async () => {
+  const unreadTask = task("u1", "done", { title: "Long result", needsAcknowledgement: true, outcome: "Line one\nLine two with the full outcome" });
+  const calls: unknown[] = [];
+  const { slot, view } = mount([unreadTask], (input) => { calls.push(input); view.tasks[0] = { ...unreadTask, acknowledgedAt: NOW, needsAcknowledgement: false }; return view.tasks[0]!; });
+  fireEvent.click(await slot.findByRole("button", { name: /Long result\. Done\. Open details/ }));
+  expect(slot.getByRole("article").textContent).toContain("Line two with the full outcome");
+  fireEvent.click(slot.getByRole("button", { name: "Acknowledge" }));
+  await waitFor(() => expect(calls).toEqual([{ taskId: unreadTask.id, acknowledged: true }]));
+  const toggle = await slot.findByRole("button", { name: /Done/, expanded: false });
+  await waitFor(() => expect(document.activeElement).toBe(toggle));
+  expect(slot.queryByRole("region", { name: /Needs acknowledgement/ })).toBeNull();
 });
 
 it("separates Waiting on Michael from Waiting on others and never presents an unrecorded owner as Michael", async () => {

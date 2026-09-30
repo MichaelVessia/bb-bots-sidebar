@@ -76,7 +76,10 @@ existing conversation histories and track legacy home project IDs for compatibil
   count in the content. No nav page, other dashboards, or Bots/Chats list changes.
 - Tasks live in `bot_tasks`, keyed `task_<hex>`, written only by explicit
   `bb bots task set|remove`, the panel's manual status/owner change, and its Done
-  acknowledgement (read state, not progress; any update clears it). Thread state is live data: never copy it into a task,
+  acknowledgement (read state, not progress). Every agent write that leaves a task
+  Done sets `needsAcknowledgement` and clears `acknowledgedAt`; Michael's own panel
+  Done does not. Pre-field records are legacy history (false, acknowledgedAt kept).
+  Show unread results in Needs acknowledgement until Michael acknowledges them. Thread state is live data: never copy it into a task,
   infer an outcome from an idle thread, or scrape chat text. No model calls.
 - Waiting tasks carry an explicit owner (`waitingOn`: michael / other / agent, plus
   `waitingFor`; legacy `external` reads as `other`). Save status returns to the list. Unrecorded owners never display as Michael. Show

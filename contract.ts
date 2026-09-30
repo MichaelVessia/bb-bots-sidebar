@@ -124,6 +124,9 @@ export const taskSchema = z.object({
   askThreadId: id.nullable().default(null),
   // Set when Michael has read a Done result; any explicit update clears it.
   acknowledgedAt: z.number().nullable().default(null),
+  // A Done result Michael has not read yet. Records from before this field are
+  // legacy history: false, and their acknowledgedAt stays as stored.
+  needsAcknowledgement: z.boolean().default(false),
   // Waiting only: the store clears both when a task leaves Waiting.
   waitingOn: waitingOnSchema.nullable().default(null), waitingFor: printableText(120, true).default(""),
   createdAt: z.number(), updatedAt: z.number(), updatedByThreadId: id.nullable(),

@@ -421,7 +421,7 @@ export default async function plugin(bb: BbPluginApi) {
       const current = tasks.get(taskId);
       if (!current) throw new Error("This task no longer exists.");
       // A panel edit has no writer thread. Keep the conversation that can explain the task.
-      const task = tasks.set(taskId, { status, waitingOn, waitingFor: waitingFor ?? "", outcome, askThreadId: current.askThreadId ?? current.updatedByThreadId }, null);
+      const task = tasks.set(taskId, { status, waitingOn, waitingFor: waitingFor ?? "", outcome, askThreadId: current.askThreadId ?? current.updatedByThreadId }, null, true);
       publishTasks(); return task;
     },
     task_acknowledge: async ({ taskId, acknowledged }) => { const task = tasks.acknowledge(taskId, acknowledged); publishTasks(); return task; },

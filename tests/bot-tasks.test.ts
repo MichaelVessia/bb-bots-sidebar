@@ -130,8 +130,37 @@ describe("decision detail and acknowledgement", () => {
     const legacy = { id: `task_${"a".repeat(32)}`, title: "Old", status: "waiting", botId: bot.id, threadId: "worker", links: [], nextStep: "Decide", outcome: "", createdAt: 1, updatedAt: 2, updatedByThreadId: "other" };
     host.bb.storage.database().prepare("INSERT INTO bot_tasks(id,data,updated_at) VALUES (?,?,?)").run(legacy.id, JSON.stringify(legacy), 2);
     const view = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: object[]; threadBots: Record<string, string> };
-    expect(view.tasks).toEqual([{ ...legacy, context: "", recommendation: "", options: [], askThreadId: null, acknowledgedAt: null, waitingOn: null, waitingFor: "" }]);
+    expect(view.tasks).toEqual([{ ...legacy, context: "", recommendation: "", options: [], askThreadId: null, acknowledgedAt: null, needsAcknowledgement: false, waitingOn: null, waitingFor: "" }]);
     expect(view.threadBots).toEqual({ worker: bot.id });
+  });
+});
+
+describe("needs acknowledgement", () => {
+  it("keeps legacy Done records as history without pretending they were acknowledged", async () => {
+    const { host, bot } = await setup();
+    const db = host.bb.storage.database();
+    const base = { botId: bot.id, threadId: "worker", links: [], nextStep: "", outcome: "Shipped", createdAt: 1, updatedAt: 2, updatedByThreadId: null, status: "done" };
+    const legacy = { ...base, id: `task_${"1".repeat(32)}`, title: "Old unread" };
+    const seen = { ...base, id: `task_${"2".repeat(32)}`, title: "Old seen", acknowledgedAt: 5 };
+    for (const record of [legacy, seen]) db.prepare("INSERT INTO bot_tasks(id,data,updated_at) VALUES (?,?,?)").run(record.id, JSON.stringify(record), 2);
+    const view = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: { id: string; needsAcknowledgement: boolean; acknowledgedAt: number | null }[] };
+    expect(Object.fromEntries(view.tasks.map((task) => [task.id, [task.needsAcknowledgement, task.acknowledgedAt]]))).toEqual({ [legacy.id]: [false, null], [seen.id]: [false, 5] });
+  });
+
+  it("flags new and updated Done results for acknowledgement, persists acknowledgement, and never flags Michael's own Done", async () => {
+    const { host, create } = await setup();
+    const done = await create(["--title", "C4 draft", "--status", "done", "--outcome", "Draft saved"]);
+    expect(done).toMatchObject({ needsAcknowledgement: true, acknowledgedAt: null });
+    const read = await host.harness.behavior.callRpc("task_acknowledge", { taskId: done.id, acknowledged: true }) as { needsAcknowledgement: boolean; acknowledgedAt: number };
+    expect(read.needsAcknowledgement).toBe(false);
+    await host.reload();
+    const reloaded = (await host.harness.behavior.callRpc("tasks_list", null) as { tasks: { id: string; needsAcknowledgement: boolean; acknowledgedAt: number | null }[] }).tasks.find((task) => task.id === done.id)!;
+    expect(reloaded).toMatchObject({ needsAcknowledgement: false, acknowledgedAt: read.acknowledgedAt });
+    expect(await create([done.id, "--outcome", "Draft saved and shared"])).toMatchObject({ needsAcknowledgement: true, acknowledgedAt: null });
+    expect(await host.harness.behavior.callRpc("task_acknowledge", { taskId: done.id, acknowledged: false })).toMatchObject({ needsAcknowledgement: true, acknowledgedAt: null });
+    const mine = await create(["--title", "Mine", "--status", "now", "--next", "N"]);
+    expect(await host.harness.behavior.callRpc("task_set_status", { taskId: mine.id, status: "done", outcome: "I did it" })).toMatchObject({ needsAcknowledgement: false, acknowledgedAt: null });
+    expect(await create([mine.id, "--status", "now", "--next", "Again"])).toMatchObject({ needsAcknowledgement: false });
   });
 });
 

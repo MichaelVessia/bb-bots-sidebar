@@ -22,7 +22,7 @@ For decisions, --next states exactly what Michael must decide or do. --context (
 --recommendation (1000), and up to 5 single-line --option choices appear in the task
 detail; repeated --option replaces the list and --option none clears it. The Ask action
 drafts an unsent question in --ask-thread, which defaults to the creating conversation.
-Any update clears Michael's acknowledgement of a Done result.
+Creating or updating a Done task puts it in Needs acknowledgement until Michael reads it.
 Waiting tasks name who holds the next action: --waiting-on michael, other (someone else:
 a person, team, or external party), or agent, plus --waiting-for with a name (120), e.g.
 "Mosyle administrator". The older value external is accepted and stored as other.
@@ -43,7 +43,8 @@ export function createTaskStore(bb: BbPluginApi) {
     list(): BotTask[] { return (db.prepare("SELECT data FROM bot_tasks ORDER BY updated_at DESC, id").all() as { data: string }[]).map((row) => decode(row.data)); },
     // Validate the merged record inside one transaction so partial updates
     // never persist an incomplete task.
-    set(taskId: string | null, fields: TaskFields, updatedByThreadId: string | null): BotTask {
+    // byMichael marks his own panel edits: he wrote that result, so it needs no acknowledgement.
+    set(taskId: string | null, fields: TaskFields, updatedByThreadId: string | null, byMichael = false): BotTask {
       return db.transaction(() => {
         const current = taskId ? get(taskId) : null;
         if (taskId && !current) throw new Error(`Task not found: ${taskId}. Use bb bots task list for IDs.`);
@@ -55,6 +56,7 @@ export function createTaskStore(bb: BbPluginApi) {
           createdAt: current?.createdAt ?? now, updatedAt: current ? nextTimestamp(current.updatedAt) : now, updatedByThreadId,
           acknowledgedAt: null,
         };
+        next.needsAcknowledgement = next.status === "done" && !byMichael;
         // A waiting owner describes Waiting only; never carry a stale one forward.
         if (next.status !== "waiting") Object.assign(next, { waitingOn: null, waitingFor: "" });
         else if (next.waitingOn === "michael") next.waitingFor = "";
@@ -71,7 +73,8 @@ export function createTaskStore(bb: BbPluginApi) {
         const current = get(id);
         if (!current) throw new Error("This task no longer exists.");
         if (acknowledged && current.status !== "done") throw new Error("Only Done tasks can be acknowledged.");
-        const task = taskSchema.parse({ ...current, acknowledgedAt: acknowledged ? Date.now() : null });
+        // Marking unread returns a Done result to Needs acknowledgement.
+        const task = taskSchema.parse({ ...current, acknowledgedAt: acknowledged ? Date.now() : null, needsAcknowledgement: !acknowledged && current.status === "done" });
         db.prepare("UPDATE bot_tasks SET data = ? WHERE id = ?").run(JSON.stringify(task), id);
         return task;
       }).immediate();
