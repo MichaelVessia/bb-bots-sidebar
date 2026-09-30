@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginCliContext } from "@get-bb/plugin-sdk";
-import { TASK_LIMIT, TASK_STATUSES, WAITING_ON, taskSchema, type WaitingOn, type BotMetadata, type BotTask, type TaskStatus } from "../contract";
+import { TASK_LIMIT, TASK_STATUSES, WAITING_ON, agentTaskIssues, taskSchema, type WaitingOn, type BotMetadata, type BotTask, type TaskStatus } from "../contract";
 import type { BotStore } from "./bot-store";
 import { nextTimestamp } from "./bot-store";
 
@@ -63,6 +63,8 @@ export function createTaskStore(bb: BbPluginApi) {
         const merged = taskSchema.safeParse(next);
         if (!merged.success) throw new Error(merged.error.issues.map((issue) => `${issue.path.join(".") || "task"}: ${issue.message}`).join("; "));
         const task = merged.data;
+        const issue = byMichael ? null : agentTaskIssues(task);
+        if (issue) throw new Error(issue);
         db.prepare("INSERT INTO bot_tasks(id,data,updated_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at").run(task.id, JSON.stringify(task), task.updatedAt);
         return task;
       }).immediate();

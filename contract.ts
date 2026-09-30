@@ -130,10 +130,13 @@ export const taskSchema = z.object({
   // Waiting only: the store clears both when a task leaves Waiting.
   waitingOn: waitingOnSchema.nullable().default(null), waitingFor: printableText(120, true).default(""),
   createdAt: z.number(), updatedAt: z.number(), updatedByThreadId: id.nullable(),
-}).strict().superRefine((task, ctx) => {
-  if (task.status !== "done" && !task.nextStep) ctx.addIssue({ code: "custom", path: ["nextStep"], message: "Now and Waiting tasks need a next step" });
-  if (task.status === "done" && !task.outcome) ctx.addIssue({ code: "custom", path: ["outcome"], message: "Done tasks need an outcome" });
-});
+}).strict();
+// Agents must describe their work; Michael's board moves and notes may leave these empty.
+export function agentTaskIssues(task: Pick<BotTask, "status" | "nextStep" | "outcome">) {
+  if (task.status !== "done" && !task.nextStep) return "nextStep: Now and Waiting tasks need a next step";
+  if (task.status === "done" && !task.outcome) return "outcome: Done tasks need an outcome";
+  return null;
+}
 export type BotTask = z.infer<typeof taskSchema>;
 export type TaskStatus = BotTask["status"];
 export type WaitingOn = (typeof WAITING_ON)[number];
@@ -165,9 +168,11 @@ export const rpcContract = defineRpcContract({
   // threadBots maps task-linked conversations to their bots for labels only.
   tasks_list: { input: z.null(), output: z.object({ tasks: z.array(taskSchema), bots: z.array(taskBotSchema), threadBots: z.record(id, id) }).strict() },
   // Michael's manual status/owner change from the panel. Waiting needs an owner.
+  // Michael's board move or note edit. Notes are optional; an omitted waiting owner
+  // keeps the current one, or becomes "other" for a task entering Waiting.
   task_set_status: { input: z.object({
     taskId: z.string().regex(/^task_[a-f0-9]{32}$/), status: z.enum(TASK_STATUSES), waitingOn: waitingOnSchema.optional(),
-    waitingFor: printableText(120, true).optional(), outcome: printableText(1000).optional(),
-  }).strict().refine((value) => value.status !== "waiting" || value.waitingOn, "Choose who the task is waiting on"), output: taskSchema },
+    waitingFor: printableText(120, true).optional(), nextStep: printableText(500).optional(), outcome: printableText(1000).optional(),
+  }).strict(), output: taskSchema },
   task_acknowledge: { input: z.object({ taskId: z.string().regex(/^task_[a-f0-9]{32}$/), acknowledged: z.boolean() }).strict(), output: taskSchema },
 });

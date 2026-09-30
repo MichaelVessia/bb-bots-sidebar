@@ -72,26 +72,28 @@ existing conversation histories and track legacy home project IDs for compatibil
 ## Work view contract
 
 - Work is one right-panel tab (`threadPanelAction` + `experimental_newThreadPanelAction`,
-  same `WorkPanel`, flush layout): Now / Waiting on Michael / Done, with the Waiting
-  count in the content. No nav page, other dashboards, or Bots/Chats list changes.
+  same `WorkPanel`, flush layout) showing a Kanban board: Now / Waiting on Michael /
+  Waiting on others / Done. Lanes below 720 px, columns above. No nav page, other
+  dashboards, or Bots/Chats list changes.
 - Tasks live in `bot_tasks`, keyed `task_<hex>`, written only by explicit
   `bb bots task set|remove`, the panel's manual status/owner change, and its Done
   acknowledgement (read state, not progress). Every agent write that leaves a task
   Done sets `needsAcknowledgement` and clears `acknowledgedAt`; Michael's own panel
   Done does not. Pre-field records are legacy history (false, acknowledgedAt kept).
-  Show unread results in Needs acknowledgement until Michael acknowledges them. Thread state is live data: never copy it into a task,
+  Keep unread results at the top of Done until Michael acknowledges them. Thread state is live data: never copy it into a task,
   infer an outcome from an idle thread, or scrape chat text. No model calls.
 - Waiting tasks carry an explicit owner (`waitingOn`: michael / other / agent, plus
-  `waitingFor`; legacy `external` reads as `other`). Save status returns to the list. Unrecorded owners never display as Michael. Show
-  Waiting on Michael and Waiting on others separately. Michael may change status and
-  owner manually through the row Status menu or the detail's explicit-Save form
-  (`task_set_status`); keep both keyboard accessible and never require drag.
-- The panel lists Waiting on Michael first, hides empty sections, collapses Done, and opens a
-  task detail with a back path. Show missing decision fields honestly. Ask only drafts
-  an unsent question in the ask thread through the composer bridge; never send.
-- Validate every record: https links without credentials, existing threads/bots,
-  next step for Now/Waiting, outcome for Done. The page receives only public bot
-  fields and refreshes on `bot-tasks-changed`, never by polling.
+  `waitingFor`; legacy `external` reads as `other`). Unrecorded owners never display as
+  Michael. Michael moves cards by drag (visible drop zones), the Move menu, or Alt+Arrow
+  (`task_set_status`); keep all three and never require drag. Moves are optimistic,
+  announce the saved result, and roll back with an explanation on failure.
+- Michael's moves and note edits never require next step, waiting person, or outcome.
+  Agent CLI writes still must supply next step (Now/Waiting) and outcome (Done).
+- Cards expand for notes, links, owner thread, Ask, and acknowledgement. Show missing
+  fields honestly. Ask only drafts an unsent question through the composer bridge.
+- Validate every record: https links without credentials, existing threads/bots.
+  The page receives only public bot fields and refreshes on `bot-tasks-changed`,
+  never by polling.
 
 # Bots sidebar UX contract
 

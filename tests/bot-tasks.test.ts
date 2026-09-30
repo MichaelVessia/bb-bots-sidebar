@@ -189,15 +189,21 @@ describe("waiting owner", () => {
     expect((await run(["--help"])).stdout).not.toContain("michael|other|agent|external");
   });
 
-  it("lets Michael set status and owner from the panel, requiring an owner for Waiting and an outcome for Done", async () => {
-    const { host, create } = await setup();
-    const task = await create(["--title", "PR review", "--status", "waiting", "--next", "Review", "--waiting-on", "michael", "--context", "Keep me"]);
-    const call = (input: object) => host.harness.behavior.callRpc("task_set_status", { taskId: task.id, ...input });
-    await expect(call({ status: "waiting" })).rejects.toThrow();
-    await expect(call({ status: "done" })).rejects.toThrow("Done tasks need an outcome");
-    const moved = await call({ status: "waiting", waitingOn: "other", waitingFor: "flo360 reviewers" }) as Record<string, unknown>;
-    expect(moved).toMatchObject({ status: "waiting", waitingOn: "other", waitingFor: "flo360 reviewers", context: "Keep me", nextStep: "Review", updatedByThreadId: null, askThreadId: "worker" });
-    expect(await call({ status: "done", outcome: "Approved by reviewers" })).toMatchObject({ status: "done", waitingOn: null, outcome: "Approved by reviewers" });
+  it("lets Michael move tasks without notes, keeping owners and metadata, while agents still must describe work", async () => {
+    const { host, run, create } = await setup();
+    const task = await create(["--title", "PR review", "--status", "waiting", "--next", "Review", "--waiting-on", "agent", "--waiting-for", "Codex", "--context", "Keep me"]);
+    const call = (input: object) => host.harness.behavior.callRpc("task_set_status", { taskId: task.id, ...input }) as Promise<Record<string, unknown>>;
+    // Entering Waiting on others keeps the existing non-Michael owner and name.
+    expect(await call({ status: "waiting" })).toMatchObject({ waitingOn: "agent", waitingFor: "Codex", context: "Keep me", nextStep: "Review", updatedByThreadId: null, askThreadId: "worker" });
+    const done = await call({ status: "done" });
+    expect(done).toMatchObject({ status: "done", outcome: "", needsAcknowledgement: false, waitingOn: null, context: "Keep me" });
+    expect(await call({ status: "waiting" })).toMatchObject({ waitingOn: "other", waitingFor: "" });
+    expect(await call({ status: "now", nextStep: "" })).toMatchObject({ status: "now", nextStep: "" });
+    expect(await call({ status: "now", nextStep: "Follow up" })).toMatchObject({ nextStep: "Follow up" });
+    // Records Michael left without notes stay readable, and agents still need them.
+    expect((await host.harness.behavior.callRpc("tasks_list", null) as { tasks: unknown[] }).tasks).toHaveLength(1);
+    const agentDone = await run(["set", task.id, "--status", "done"], "worker");
+    expect(agentDone.exitCode).toBe(1); expect(agentDone.stderr).toContain("Done tasks need an outcome");
   });
 });
 

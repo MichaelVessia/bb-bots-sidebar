@@ -21,7 +21,7 @@ function task(id: string, status: BotTask["status"], overrides: Partial<BotTask>
     createdAt: NOW - 60_000, updatedAt: NOW - 5 * 60_000, updatedByThreadId: null, ...overrides,
   };
 }
-type StatusInput = { taskId: string; status: BotTask["status"]; waitingOn?: BotTask["waitingOn"]; waitingFor?: string; outcome?: string };
+type StatusInput = { taskId: string; status: BotTask["status"]; waitingOn?: BotTask["waitingOn"]; waitingFor?: string; nextStep?: string; outcome?: string };
 function mount(tasks: BotTask[], acknowledge?: (input: { taskId: string; acknowledged: boolean }) => BotTask, setStatus?: (input: StatusInput) => BotTask) {
   const panel = app.threadPanelActions.find((entry) => entry.id === "work")!;
   const view = { tasks, bots: [{ id: bot.id, name: bot.name, role: bot.role, avatar: bot.avatar }, orchestrator], threadBots: { worker: bot.id, orch: orchestrator.id } };
@@ -49,68 +49,182 @@ it("offers Work as a right-panel tab plus an invisible thread-composer bridge, n
   expect(app.composerCustomizations).toMatchObject([{ id: "work-ask", scopes: ["thread"], banners: [{ id: "work-ask-prefill", chrome: "bare" }] }]);
 });
 
-it("lists Waiting first with the requested action, owner, and age; hides empty sections; collapses Done", async () => {
-  const { slot } = mount([decision, task("d", "done")]);
-  const waiting = await slot.findByRole("region", { name: /Waiting on Michael/ });
-  expect(slot.container.querySelector("[data-work-section]")?.getAttribute("data-work-section")).toBe("waiting");
-  expect(slot.queryByRole("region", { name: /^Now/ })).toBeNull();
-  const row = within(waiting).getByText("Review Flo360 launch PRs").closest("li")!;
-  expect(row.textContent).toContain("approve PR #4417");
-  expect(row.textContent).not.toContain("Michael:");
-  expect(within(row).getByText("5m ago")).toBeTruthy();
-  fireEvent.click(within(row).getByRole("button", { name: /open Runner audit/ }));
-  expect(slot.inspection.navigateCalls).toEqual([{ method: "toThread", threadId: "worker" }]);
-  const done = slot.getByRole("button", { name: /Done/ });
-  expect(done.getAttribute("aria-expanded")).toBe("false");
-  expect(done.textContent).toContain("1");
-  expect(slot.queryByText("Task d")).toBeNull();
+const column = (slot: ReturnType<typeof mount>["slot"], id: string) => slot.container.querySelector<HTMLElement>(`[data-work-column="${id}"]`)!;
+const cardIn = (slot: ReturnType<typeof mount>["slot"], columnId: string, title: string) => within(column(slot, columnId)).queryByText(title)?.closest("li") ?? null;
+// Records the server would return for a move, so tests follow the real column rules.
+function mover(view: { tasks: BotTask[] }, calls: StatusInput[]) {
+  return (input: StatusInput) => {
+    calls.push(input);
+    const index = view.tasks.findIndex((entry) => entry.id === input.taskId);
+    const current = view.tasks[index]!;
+    view.tasks[index] = { ...current, status: input.status, waitingOn: input.status === "waiting" ? input.waitingOn ?? "other" : null, waitingFor: input.waitingFor ?? "",
+      ...(input.nextStep !== undefined ? { nextStep: input.nextStep } : {}), ...(input.outcome !== undefined ? { outcome: input.outcome } : {}), needsAcknowledgement: false, acknowledgedAt: null };
+    return view.tasks[index]!;
+  };
+}
+function dataTransfer() {
+  const data = new Map<string, string>();
+  return { effectAllowed: "", dropEffect: "", setData: (type: string, value: string) => data.set(type, value), getData: (type: string) => data.get(type) ?? "", get types() { return [...data.keys()]; } };
+}
+
+it("shows a board with Now, Waiting on Michael, Waiting on others, and Done, stacked as lanes in a narrow panel", async () => {
+  const { slot } = mount([task("n", "now"), decision, task("o", "waiting", { title: "Vendor fix", waitingOn: "other", waitingFor: "Mosyle administrator" }), task("legacy", "waiting", { title: "Old waiting", waitingOn: null })]);
+  await slot.findByText("Review Flo360 launch PRs");
+  expect(Array.from(slot.container.querySelectorAll("[data-work-column]")).map((entry) => entry.getAttribute("data-work-column"))).toEqual(["now", "michael", "others", "done"]);
+  expect(slot.container.querySelector(".work-board")?.getAttribute("data-layout")).toBe("lanes");
+  expect(within(column(slot, "michael")).getByRole("heading").textContent).toBe("Waiting on Michael1");
+  expect(cardIn(slot, "michael", "Review Flo360 launch PRs")!.textContent).toContain("approve PR #4417");
+  expect(cardIn(slot, "michael", "Review Flo360 launch PRs")!.textContent).not.toContain("Michael:");
+  expect(cardIn(slot, "others", "Vendor fix")!.textContent).toContain("Waiting on Mosyle administrator");
+  expect(cardIn(slot, "others", "Old waiting")!.textContent).toContain("Waiting on owner not recorded");
+  expect(column(slot, "done").textContent).toContain("No new results.");
 });
 
-it("opens a focused detail with the request, supplied guidance, honest gaps, sources, and owner thread, then returns focus", async () => {
-  const { slot } = mount([decision]);
-  const open = await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Waiting on Michael\. Open details/ });
-  fireEvent.click(open);
-  const heading = slot.getByRole("heading", { name: "Review Flo360 launch PRs", level: 2 });
-  expect(document.activeElement).toBe(heading);
-  const detail = heading.closest("article")!;
+it("uses side-by-side columns when the panel is wide", async () => {
+  const original = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class { constructor(private callback: ResizeObserverCallback) {} observe() { this.callback([{ contentRect: { width: 900 } } as ResizeObserverEntry], this as unknown as ResizeObserver); } unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
+  try {
+    const { slot } = mount([task("n", "now")]);
+    await slot.findByText("Task n");
+    await waitFor(() => expect(slot.container.querySelector(".work-board")?.getAttribute("data-layout")).toBe("columns"));
+  } finally { globalThis.ResizeObserver = original; }
+});
+
+it("expands a card to show outcome, context, options, links, owner thread, and actions", async () => {
+  const { slot } = mount([{ ...decision, context: "Staging passed." }]);
+  const toggle = await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Waiting on Michael\. Expand/ });
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  const detail = document.getElementById(toggle.getAttribute("aria-controls")!)!;
   expect(detail.textContent).toContain("What you need to decide or do");
-  expect(detail.textContent).toContain("approve PR #4417");
   expect(detail.textContent).toContain("Approve after CI passes");
-  expect(within(detail).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Approve now", "Wait for QA", "PR flo360#4417"]);
-  expect(detail.textContent).toContain("No context was recorded.");
-  expect(detail.textContent).toContain("Last result");
+  expect(detail.textContent).toContain("Staging passed.");
   expect(within(detail).getByText("PR flo360#4417").closest("a")?.getAttribute("href")).toBe("https://github.com/acme/flo360/pull/4417");
   expect(within(within(detail).getByRole("button", { name: /Runner audit/ })).getByRole("img", { name: "Waiting for input" })).toBeTruthy();
-  fireEvent.keyDown(detail, { key: "Escape" });
-  await waitFor(() => expect(document.activeElement).toBe(slot.getByRole("button", { name: /Review Flo360 launch PRs\. Waiting/ })));
+  expect(within(detail).getByRole("button", { name: "Ask Orchestrator to explain" })).toBeTruthy();
+  expect(slot.container.textContent).not.toContain(bot.soul || "SOUL");
 });
 
-it("says when a decision has no options or recommendation", async () => {
-  const { slot } = mount([task("bare", "waiting")]);
-  fireEvent.click(await slot.findByRole("button", { name: /Task bare\. Waiting/ }));
-  expect(slot.getByText("No options or recommendation were recorded for this decision.")).toBeTruthy();
-  expect(slot.getByText("No PR or issue link was recorded.")).toBeTruthy();
+it("drags a card to another column with a visible drop target, saves without notes, and announces the result", async () => {
+  const calls: StatusInput[] = [];
+  const now = task("n", "now", { title: "Ship fix", nextStep: "" });
+  const { slot, view } = mount([now, decision], undefined, (input) => mover(view, calls)(input));
+  const card = (await slot.findByText("Ship fix")).closest("li")!;
+  const transfer = dataTransfer();
+  fireEvent.dragStart(card, { dataTransfer: transfer });
+  expect(card.getAttribute("data-dragging")).toBe("true");
+  fireEvent.dragOver(column(slot, "now"), { dataTransfer: transfer });
+  expect(column(slot, "now").getAttribute("data-drop-target")).toBe("false");
+  fireEvent.dragOver(column(slot, "done"), { dataTransfer: transfer });
+  expect(column(slot, "done").getAttribute("data-drop-target")).toBe("true");
+  expect(column(slot, "done").textContent).toContain("Drop to move to Done");
+  fireEvent.dragOver(column(slot, "michael"), { dataTransfer: transfer });
+  expect(column(slot, "michael").querySelector(".work-drop-hint")?.className).toContain("absolute");
+  expect(column(slot, "done").getAttribute("data-drop-target")).toBe("false");
+  fireEvent.dragOver(column(slot, "done"), { dataTransfer: transfer });
+  fireEvent.drop(column(slot, "done"), { dataTransfer: transfer });
+  await waitFor(() => expect(calls).toEqual([{ taskId: now.id, status: "done" }]));
+  expect(await slot.findByText("Moved “Ship fix” to Done.")).toBeTruthy();
+  // Michael's own Done needs no acknowledgement; it lands in the opened history.
+  expect(within(column(slot, "done")).getByRole("button", { name: /History/, expanded: true })).toBeTruthy();
+  expect(cardIn(slot, "done", "Ship fix")).not.toBeNull();
 });
 
-it("opens the Waiting heading as a focused list with a back path", async () => {
-  const { slot } = mount([decision, task("n", "now")]);
-  fireEvent.click(await slot.findByRole("button", { name: "Waiting on Michael, 1 task. Show only these" }));
-  expect(slot.getByRole("heading", { name: /Waiting on Michael 1/ })).toBeTruthy();
-  expect(slot.queryByText("Task n")).toBeNull();
-  fireEvent.click(slot.getByRole("button", { name: /Review Flo360 launch PRs\. Waiting/ }));
-  fireEvent.click(slot.getByRole("button", { name: "Waiting on Michael" }));
-  fireEvent.click(slot.getByRole("button", { name: "Work" }));
-  expect(await slot.findByText("Task n")).toBeTruthy();
+it("moves a card with Alt+Arrow keys and keeps focus on it", async () => {
+  const calls: StatusInput[] = [];
+  const { slot, view } = mount([task("n", "now", { title: "Ship fix" })], undefined, (input) => mover(view, calls)(input));
+  const toggle = await slot.findByRole("button", { name: /Ship fix\. Now\. Expand/ });
+  toggle.focus();
+  fireEvent.keyDown(toggle, { key: "ArrowRight", altKey: true });
+  await waitFor(() => expect(calls).toEqual([{ taskId: view.tasks[0]!.id, status: "waiting", waitingOn: "michael" }]));
+  await waitFor(() => expect(cardIn(slot, "michael", "Ship fix")).not.toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(slot.getByRole("button", { name: /Ship fix\. Waiting on Michael\. Expand/ })));
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowDown", altKey: true });
+  await waitFor(() => expect(calls.at(-1)).toEqual({ taskId: view.tasks[0]!.id, status: "waiting", waitingOn: "other" }));
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowRight" });
+  expect(calls).toHaveLength(2);
+});
+
+it("moves a card with the Move menu and keeps a named other owner", async () => {
+  const calls: StatusInput[] = [];
+  const vendor = task("o", "waiting", { title: "Vendor fix", waitingOn: "agent", waitingFor: "Codex" });
+  const { slot, view } = mount([vendor], undefined, (input) => mover(view, calls)(input));
+  const trigger = await slot.findByRole("button", { name: /Move Vendor fix\. Now in Waiting on others/ });
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  const menu = await slot.findByRole("menu");
+  expect(within(menu).getAllByRole("menuitem").map((item) => [item.textContent, item.hasAttribute("data-disabled")])).toEqual([["Now", false], ["Waiting on Michael", false], ["Waiting on others", true], ["Done", false]]);
+  fireEvent.click(within(menu).getByRole("menuitem", { name: "Now" }));
+  await waitFor(() => expect(calls).toEqual([{ taskId: vendor.id, status: "now" }]));
+});
+
+it("rolls a card back and explains the error when a move fails", async () => {
+  const now = task("n", "now", { title: "Ship fix" });
+  const { slot } = mount([now], undefined, () => { throw new Error("Server unavailable."); });
+  const card = (await slot.findByText("Ship fix")).closest("li")!;
+  const transfer = dataTransfer();
+  fireEvent.dragStart(card, { dataTransfer: transfer });
+  fireEvent.drop(column(slot, "michael"), { dataTransfer: transfer });
+  expect((await slot.findByRole("alert")).textContent).toBe("Could not move “Ship fix”: Server unavailable. It stayed in Now.");
+  expect(cardIn(slot, "now", "Ship fix")).not.toBeNull();
+  expect(cardIn(slot, "michael", "Ship fix")).toBeNull();
+});
+
+it("edits optional notes after a move, with empty notes allowed", async () => {
+  const calls: StatusInput[] = [];
+  const vendor = task("o", "waiting", { title: "Vendor fix", waitingOn: "other", waitingFor: "" , nextStep: "" });
+  const { slot, view } = mount([vendor], undefined, (input) => mover(view, calls)(input));
+  fireEvent.click(await slot.findByRole("button", { name: /Vendor fix\. Waiting on others\. Expand/ }));
+  expect(slot.getByText("No next step recorded.")).toBeTruthy();
+  fireEvent.click(slot.getByRole("button", { name: "Edit notes" }));
+  expect(document.activeElement).toBe(slot.getByLabelText("Next step (optional)"));
+  const who = slot.getByLabelText("Who (optional)");
+  fireEvent.change(who, { target: { value: "Mosyle administrator" } });
+  expect(fireEvent.keyDown(who, { key: "Enter" })).toBe(false);
+  fireEvent.click(slot.getByRole("button", { name: "Save notes" }));
+  await waitFor(() => expect(calls).toEqual([{ taskId: vendor.id, status: "waiting", nextStep: "", waitingOn: "other", waitingFor: "Mosyle administrator" }]));
+  expect(await slot.findByText("Saved notes for “Vendor fix”.")).toBeTruthy();
+  expect(cardIn(slot, "others", "Vendor fix")!.textContent).toContain("Waiting on Mosyle administrator");
+});
+
+it("keeps new agent results in Done until acknowledged, with legacy results in history", async () => {
+  const first = task("u1", "done", { title: "C4 draft ready", needsAcknowledgement: true, outcome: "Private C4 draft saved", links: ["https://github.com/acme/app/pull/9"], threadId: "worker" });
+  const second = task("u2", "done", { title: "Second result", needsAcknowledgement: true });
+  const legacy = task("old", "done", { title: "Legacy result" });
+  const calls: unknown[] = [];
+  const { slot, view } = mount([first, second, legacy], (input) => {
+    calls.push(input);
+    const index = view.tasks.findIndex((entry) => entry.id === input.taskId);
+    view.tasks[index] = { ...view.tasks[index]!, acknowledgedAt: input.acknowledged ? NOW : null, needsAcknowledgement: !input.acknowledged };
+    return view.tasks[index]!;
+  });
+  const done = column(slot, (await slot.findByText("C4 draft ready"), "done"));
+  expect(within(done).getByRole("heading").textContent).toContain("2");
+  const row = cardIn(slot, "done", "C4 draft ready")!;
+  expect(row.textContent).toContain("New result");
+  expect(row.textContent).toContain("Private C4 draft saved");
+  expect(within(done).getByRole("button", { name: /History/ }).textContent).toContain("1");
+  expect(cardIn(slot, "done", "Legacy result")).toBeNull();
+  fireEvent.click(within(row).getByRole("button", { name: "Acknowledge" }));
+  await waitFor(() => expect(calls).toEqual([{ taskId: first.id, acknowledged: true }]));
+  await waitFor(() => expect(document.activeElement).toBe(slot.getByRole("button", { name: /Second result\. Done, new result\. Expand/ })));
+  expect(within(column(slot, "done")).getByRole("button", { name: /History/ }).textContent).toContain("2");
+});
+
+it("lets Michael read the full outcome before acknowledging from the expanded card", async () => {
+  const unread = task("u", "done", { title: "Long result", needsAcknowledgement: true, outcome: "Line one\nLine two with the full outcome" });
+  const { slot } = mount([unread], (input) => ({ ...unread, acknowledgedAt: input.acknowledged ? NOW : null, needsAcknowledgement: false }));
+  fireEvent.click(await slot.findByRole("button", { name: /Long result\. Done, new result\. Expand/ }));
+  expect(cardIn(slot, "done", "Long result")!.querySelector(".work-card-detail")!.textContent).toContain("Line two with the full outcome");
 });
 
 it("drafts an unsent Ask question for the explaining conversation without sending anything", async () => {
   const { slot } = mount([decision]);
-  fireEvent.click(await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Waiting/ }));
+  fireEvent.click(await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Waiting on Michael\. Expand/ }));
   fireEvent.click(slot.getByRole("button", { name: "Ask Orchestrator to explain" }));
   expect(slot.inspection.navigateCalls).toEqual([{ method: "toThread", threadId: "orch" }]);
   expect(slot.inspection.rpcCalls.map((call) => call.method)).toEqual(["tasks_list"]);
   expect(takeAskPrefill("orch")).toBe(askQuestion(decision));
-  expect(askQuestion(decision)).toContain(decision.id);
 });
 
 it("fills only the matching thread draft, appending to existing text", async () => {
@@ -124,141 +238,9 @@ it("fills only the matching thread draft, appending to existing text", async () 
   expect(takeAskPrefill("other")).toBe("Not for this thread");
 });
 
-it("keeps legacy Done results in collapsed history, acknowledged or not", async () => {
-  const calls: unknown[] = [];
-  const legacy = task("d", "done");
-  const { slot, view } = mount([legacy, task("seen", "done", { acknowledgedAt: NOW })], (input) => { calls.push(input); view.tasks[0] = { ...legacy, acknowledgedAt: input.acknowledged ? NOW : null }; return view.tasks[0]!; });
-  const toggle = await slot.findByRole("button", { name: /Done/, expanded: false });
-  expect(toggle.textContent).toContain("2");
-  expect(slot.queryByRole("region", { name: /Needs acknowledgement/ })).toBeNull();
-  fireEvent.click(toggle);
-  fireEvent.click(slot.getByRole("button", { name: "Acknowledge" }));
-  await waitFor(() => expect(calls).toEqual([{ taskId: legacy.id, acknowledged: true }]));
-  await waitFor(() => expect(slot.getByRole("button", { name: "Show acknowledged (2)" })).toBeTruthy());
-});
-
-it("shows unread results prominently with count, outcome, owner, and links, and acknowledges them into history", async () => {
-  const first = task("u1", "done", { title: "C4 draft ready", needsAcknowledgement: true, outcome: "Private C4 draft saved", links: ["https://github.com/acme/app/pull/9"], threadId: "worker" });
-  const second = task("u2", "done", { title: "Second result", needsAcknowledgement: true });
-  const calls: unknown[] = [];
-  const { slot, view } = mount([first, second, decision], (input) => {
-    calls.push(input);
-    const index = view.tasks.findIndex((entry) => entry.id === input.taskId);
-    view.tasks[index] = { ...view.tasks[index]!, acknowledgedAt: input.acknowledged ? NOW : null, needsAcknowledgement: !input.acknowledged };
-    return view.tasks[index]!;
-  });
-  const unread = await slot.findByRole("region", { name: /Needs acknowledgement/ });
-  const order = Array.from(slot.container.querySelectorAll("[data-work-section]")).map((section) => section.getAttribute("data-work-section"));
-  expect(order.slice(0, 2)).toEqual(["waiting", "unread"]);
-  expect(within(unread).getByRole("heading").textContent).toBe("Needs acknowledgement2");
-  const row = within(unread).getByText("C4 draft ready").closest("li")!;
-  expect(row.textContent).toContain("Private C4 draft saved");
-  expect(within(row).getByRole("button", { name: /open Runner audit/ })).toBeTruthy();
-  expect(within(row).getByText("PR app#9").closest("a")?.getAttribute("href")).toBe("https://github.com/acme/app/pull/9");
-  expect(slot.container.querySelector('[data-focus-key="done-toggle"]')).toBeNull();
-  fireEvent.click(within(row).getByRole("button", { name: "Acknowledge" }));
-  await waitFor(() => expect(calls).toEqual([{ taskId: first.id, acknowledged: true }]));
-  // Focus moves to the next unread result; the acknowledged one leaves the section.
-  await waitFor(() => expect(document.activeElement).toBe(slot.getByRole("button", { name: /Second result\. Done\. Open details/ })));
-  expect(within(slot.getByRole("region", { name: /Needs acknowledgement/ })).queryByText("C4 draft ready")).toBeNull();
-  expect(slot.container.querySelector('[data-focus-key="done-toggle"]')!.textContent).toContain("1");
-});
-
-it("lets Michael read the full outcome in detail before acknowledging, then returns to the list", async () => {
-  const unreadTask = task("u1", "done", { title: "Long result", needsAcknowledgement: true, outcome: "Line one\nLine two with the full outcome" });
-  const calls: unknown[] = [];
-  const { slot, view } = mount([unreadTask], (input) => { calls.push(input); view.tasks[0] = { ...unreadTask, acknowledgedAt: NOW, needsAcknowledgement: false }; return view.tasks[0]!; });
-  fireEvent.click(await slot.findByRole("button", { name: /Long result\. Done\. Open details/ }));
-  expect(slot.getByRole("article").textContent).toContain("Line two with the full outcome");
-  fireEvent.click(slot.getByRole("button", { name: "Acknowledge" }));
-  await waitFor(() => expect(calls).toEqual([{ taskId: unreadTask.id, acknowledged: true }]));
-  const toggle = await slot.findByRole("button", { name: /Done/, expanded: false });
-  await waitFor(() => expect(document.activeElement).toBe(toggle));
-  expect(slot.queryByRole("region", { name: /Needs acknowledgement/ })).toBeNull();
-});
-
-it("separates Waiting on Michael from Waiting on others and never presents an unrecorded owner as Michael", async () => {
-  const { slot } = mount([
-    decision,
-    task("chrome", "waiting", { title: "Stop Chrome prompt", waitingOn: "other", waitingFor: "Mosyle administrator" }),
-    task("legacy", "waiting", { title: "Old waiting task", waitingOn: null }),
-    task("bot", "waiting", { title: "Agent task", waitingOn: "agent" }),
-  ]);
-  const mine = await slot.findByRole("region", { name: /Waiting on Michael/ });
-  expect(within(mine).getAllByRole("listitem")).toHaveLength(1);
-  const others = slot.getByRole("region", { name: /Waiting on others/ });
-  expect(others.textContent).toContain("Waiting on Mosyle administrator");
-  expect(others.textContent).toContain("Waiting on owner not recorded");
-  expect(others.textContent).toContain("Waiting on an agent");
-  expect(slot.getByRole("button", { name: /Old waiting task\. Waiting on owner not recorded\. Open details/ })).toBeTruthy();
-});
-
-it("changes status from the row menu with the keyboard and keeps focus on the moved row", async () => {
-  const other = task("chrome", "waiting", { title: "Stop Chrome prompt", waitingOn: "other", waitingFor: "Mosyle administrator" });
-  const calls: StatusInput[] = [];
-  const { slot, view } = mount([other], undefined, (input) => { calls.push(input); view.tasks[0] = { ...other, waitingOn: "michael", waitingFor: "" }; return view.tasks[0]!; });
-  const trigger = await slot.findByRole("button", { name: /Change status of Stop Chrome prompt\. Now: Waiting on Mosyle administrator/ });
-  fireEvent.keyDown(trigger, { key: "ArrowDown" });
-  const menu = await slot.findByRole("menu");
-  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Now", "Waiting on Michael", "Waiting on someone else…", "Waiting on an agent…", "Done…"]);
-  fireEvent.click(within(menu).getByRole("menuitem", { name: "Waiting on Michael" }));
-  await waitFor(() => expect(calls).toEqual([{ taskId: other.id, status: "waiting", waitingOn: "michael" }]));
-  const moved = await slot.findByRole("button", { name: /Stop Chrome prompt\. Waiting on Michael\. Open details/ });
-  await waitFor(() => expect(document.activeElement).toBe(moved));
-});
-
-it("edits status and waiting owner in the detail with explicit Save, validation, and a named owner", async () => {
-  const calls: StatusInput[] = [];
-  const { slot, view } = mount([decision], undefined, (input) => { calls.push(input); view.tasks[0] = { ...decision, status: input.status, waitingOn: input.waitingOn ?? null, waitingFor: input.waitingFor ?? "" }; return view.tasks[0]!; });
-  fireEvent.click(await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Waiting on Michael/ }));
-  const save = slot.getByRole("button", { name: "Save status" }) as HTMLButtonElement;
-  expect(save.disabled).toBe(true);
-  fireEvent.change(slot.getByLabelText("Waiting on"), { target: { value: "other" } });
-  const who = slot.getByLabelText("Who (optional)");
-  fireEvent.change(who, { target: { value: "flo360 reviewers" } });
-  expect(fireEvent.keyDown(who, { key: "Enter" })).toBe(false);
-  expect(calls).toEqual([]);
-  fireEvent.click(save);
-  await waitFor(() => expect(calls).toEqual([{ taskId: decision.id, status: "waiting", waitingOn: "other", waitingFor: "flo360 reviewers" }]));
-  // Save returns to the Work list with focus on the task in its new section.
-  const others = await slot.findByRole("region", { name: /Waiting on others/ });
-  const moved = within(others).getByRole("button", { name: /Review Flo360 launch PRs\. Waiting on flo360 reviewers\. Open details/ });
-  await waitFor(() => expect(document.activeElement).toBe(moved));
-  expect(slot.queryByRole("button", { name: "Save status" })).toBeNull();
-  fireEvent.click(moved);
-  fireEvent.change(slot.getByLabelText("Progress"), { target: { value: "now" } });
-  fireEvent.click(slot.getByRole("button", { name: "Reset" }));
-  expect((slot.getByLabelText("Progress") as HTMLSelectElement).value).toBe("waiting");
-  fireEvent.change(slot.getByLabelText("Progress"), { target: { value: "done" } });
-  fireEvent.change(slot.getByLabelText("Outcome"), { target: { value: " " } });
-  fireEvent.click(slot.getByRole("button", { name: "Save status" }));
-  expect(await slot.findByText("Add the outcome before marking this Done.")).toBeTruthy();
-  expect(calls).toHaveLength(1);
-  expect(slot.getByRole("button", { name: "Save status" })).toBeTruthy();
-});
-
-it("returns to the list with Done expanded and focused after saving a task as Done", async () => {
-  const { slot, view } = mount([decision], undefined, (input) => { view.tasks[0] = { ...decision, status: "done", waitingOn: null, outcome: input.outcome! }; return view.tasks[0]!; });
-  fireEvent.click(await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Waiting on Michael/ }));
-  fireEvent.change(slot.getByLabelText("Progress"), { target: { value: "done" } });
-  fireEvent.change(slot.getByLabelText("Outcome"), { target: { value: "Approved" } });
-  fireEvent.click(slot.getByRole("button", { name: "Save status" }));
-  const row = await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Done\. Open details/ });
-  expect(slot.getByRole("button", { name: /Done/, expanded: true })).toBeTruthy();
-  await waitFor(() => expect(document.activeElement).toBe(row));
-});
-
-it("opens the detail editor preset from a row menu choice that needs more detail", async () => {
-  const { slot } = mount([decision]);
-  fireEvent.keyDown(await slot.findByRole("button", { name: /Change status of Review Flo360/ }), { key: "ArrowDown" });
-  fireEvent.click(await slot.findByRole("menuitem", { name: "Waiting on someone else…" }));
-  expect((slot.getByLabelText("Waiting on") as HTMLSelectElement).value).toBe("other");
-  await waitFor(() => expect(document.activeElement).toBe(slot.getByLabelText("Who (optional)")));
-});
-
 it("refreshes on the task change signal only, without polling", async () => {
   const { slot, view } = mount([]);
-  await slot.findByText(/No tasks yet/);
+  await slot.findByText("No active work.");
   view.tasks.push(task("new", "now"));
   expect(slot.inspection.rpcCalls.map((call) => call.method)).toEqual(["tasks_list"]);
   await slot.emitRealtime(TASKS_CHANGED, {});

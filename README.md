@@ -135,34 +135,29 @@ in bot state.
 open the panel launcher and choose **Work**. BB keeps the tab with that thread or
 screen.
 
-- **Waiting on Michael** comes first. Each row shows what you must decide or do,
-  the owner bot, and its age. Click the heading to see only those tasks.
-- **Now** lists active work. **Waiting on others** lists tasks waiting on someone
-  else (a person, team, or outside party) or an agent, and names who. A task whose
-  waiting owner was never recorded says "owner not recorded"; it never appears as
-  Michael's. Empty sections are hidden.
-- **Status** on every row opens a menu: Now, Waiting on Michael, Waiting on someone
-  else…, Waiting on an agent…, or Done…. Choices ending in "…" open the detail's
-  status form to name who (optional) or write the outcome. The detail's **Status**
-  form (Progress, Waiting on, Who, Outcome) saves only on **Save status**, then
-  returns to the list with focus on the task in its new section (Done opens if needed).
-  Both work fully from the keyboard; there is no drag.
-- **Needs acknowledgement** (right after Waiting on Michael) holds every new Done
-  result, and every later update to a Done task, with its count, outcome, owner, and
-  links. It stays there until you click **Acknowledge** on the row or in its detail,
-  after reading the full outcome. Focus then moves to the next unread result.
-  Results you mark Done yourself in the panel skip this section.
-- **Done** is collapsed history with its count. Results from before this section
-  existed stay there as legacy history; they were not marked acknowledged.
-  **Show acknowledged** lists read results, and **Mark unread** returns one to
-  Needs acknowledgement. Nothing is acknowledged automatically.
+It is a Kanban board with four columns: **Now**, **Waiting on Michael**, **Waiting on
+others**, and **Done**. In the usual narrow right panel the columns stack as lanes;
+a panel at least 720 px wide shows them side by side.
 
-Click a row to open its detail: the exact request, recommendation and options,
-context, last result, PR/issue sources, and the owner's conversation with its live
-status. Fields the agent did not record say so. **Ask … to explain** opens the
-conversation that can explain the task (its `--ask-thread`) with an unsent question
-naming the task ID and title. You can edit it; nothing is sent. Back and Escape
-return to the list and restore focus. The owner name opens its thread from any row.
+- **Cards** show the title, the next step (or outcome), owner, and age. Waiting on
+  others cards name who ("owner not recorded" when unknown; never Michael). Click a
+  card title to expand it: full next step or outcome, recommendation, options,
+  context, last result, links, the owner's conversation with live status,
+  **Edit notes**, and **Ask … to explain** (an unsent question in the conversation
+  that can explain the task; nothing is sent).
+- **Move a card** by dragging it to another column (every column shows a drop
+  zone; the one under the pointer highlights), with its **Move** menu, or with
+  **Alt+Arrow** keys on the focused card title. The card moves at once and shows
+  "Saving…"; the status line confirms the move. If saving fails, the card returns
+  to its column and the status line says why.
+- **Moves need no notes.** Next step, waiting person, and outcome stay optional and
+  editable afterwards with **Edit notes**. Moving into Waiting on others keeps an
+  existing person or agent owner; leaving Waiting clears it.
+- **Done** keeps new agent results (and later agent updates to Done tasks) at the
+  top with **New result** and **Acknowledge** until you read them; focus then moves
+  to the next new result. Your own moves to Done, older results, and acknowledged
+  results sit under **History**. **Mark unread** returns one to the top. Nothing is
+  acknowledged automatically.
 
 Tasks are small, explicit records in the plugin's SQLite database, keyed by
 `task_<id>`. Live thread state (working, waiting, error) is never copied into a

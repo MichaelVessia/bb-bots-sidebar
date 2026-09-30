@@ -417,11 +417,13 @@ export default async function plugin(bb: BbPluginApi) {
       const owners = await Promise.all(threadIds.map(async (threadId) => [threadId, await resolveOwner(threadId, false).catch(() => null)] as const));
       return { tasks: list, bots: store.list().map(({ id, name, role, avatar }) => ({ id, name, role, avatar })), threadBots: Object.fromEntries(owners.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))) };
     },
-    task_set_status: async ({ taskId, status, waitingOn, waitingFor, outcome }) => {
+    task_set_status: async ({ taskId, status, waitingOn, waitingFor, nextStep, outcome }) => {
       const current = tasks.get(taskId);
       if (!current) throw new Error("This task no longer exists.");
+      const owner = status !== "waiting" ? undefined : waitingOn ?? (current.status === "waiting" && current.waitingOn ? current.waitingOn : "other");
+      const sameOwner = owner !== undefined && owner === current.waitingOn;
       // A panel edit has no writer thread. Keep the conversation that can explain the task.
-      const task = tasks.set(taskId, { status, waitingOn, waitingFor: waitingFor ?? "", outcome, askThreadId: current.askThreadId ?? current.updatedByThreadId }, null, true);
+      const task = tasks.set(taskId, { status, waitingOn: owner, waitingFor: waitingFor ?? (sameOwner ? current.waitingFor : ""), nextStep, outcome, askThreadId: current.askThreadId ?? current.updatedByThreadId }, null, true);
       publishTasks(); return task;
     },
     task_acknowledge: async ({ taskId, acknowledged }) => { const task = tasks.acknowledge(taskId, acknowledged); publishTasks(); return task; },
