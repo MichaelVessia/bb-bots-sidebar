@@ -6,12 +6,13 @@ import type { BotTask } from "../contract";
 import { TASKS_CHANGED } from "../contract";
 import { askQuestion, queueAskPrefill, takeAskPrefill } from "../lib/ask-prefill";
 import { relativeTime } from "../lib/relative-time";
+import { taskLinkLabel, withoutThreadIds } from "../lib/task-links";
 import { bot, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(cleanup);
 const NOW = Date.now();
-const orchestrator = { id: "bot-orchestrator", name: "Orchestrator", role: "Coordinator", avatar: bot.avatar };
+const orchestrator = { id: "bot-orchestrator", name: "Orchestrator", role: "Coordinator", avatar: bot.avatar, mainThreadId: "orch" };
 function task(id: string, status: BotTask["status"], overrides: Partial<BotTask> = {}): BotTask {
   return {
     id: `task_${id.padEnd(32, "0")}`, title: `Task ${id}`, status, botId: bot.id, threadId: null, links: [],
@@ -24,8 +25,8 @@ function task(id: string, status: BotTask["status"], overrides: Partial<BotTask>
 type StatusInput = { taskId: string; status: BotTask["status"]; waitingOn?: BotTask["waitingOn"]; waitingFor?: string; nextStep?: string; outcome?: string };
 function mount(tasks: BotTask[], acknowledge?: (input: { taskId: string; acknowledged: boolean }) => BotTask, setStatus?: (input: StatusInput) => BotTask) {
   const panel = app.threadPanelActions.find((entry) => entry.id === "work")!;
-  const view = { tasks, bots: [{ id: bot.id, name: bot.name, role: bot.role, avatar: bot.avatar }, orchestrator], threadBots: { worker: bot.id, orch: orchestrator.id } };
-  const threads = [thread("worker", 1, { title: "Runner audit", hasPendingInteraction: true }), thread("orch", 1, { title: "Orchestrator main" })];
+  const view = { tasks, bots: [{ id: bot.id, name: bot.name, role: bot.role, avatar: bot.avatar, mainThreadId: "main" }, orchestrator], threadBots: { worker: bot.id, main: bot.id, orch: orchestrator.id } };
+  const threads = [thread("worker", 1, { title: "Runner audit", hasPendingInteraction: true }), thread("main", 1, { title: "Test bot main" }), thread("orch", 1, { title: "Orchestrator main" })];
   const slot = renderSlot(panel, { threadId: "current", params: null }, {
     rpc: { tasks_list: () => view, task_acknowledge: (input: unknown) => acknowledge!(input as { taskId: string; acknowledged: boolean }),
       task_set_status: (input: unknown) => setStatus!(input as StatusInput) },
@@ -76,7 +77,7 @@ it("shows a board with Now, Waiting on Michael, Waiting on others, and Done, sta
   expect(cardIn(slot, "michael", "Review Flo360 launch PRs")!.textContent).toContain("approve PR #4417");
   expect(cardIn(slot, "michael", "Review Flo360 launch PRs")!.textContent).not.toContain("Michael:");
   expect(cardIn(slot, "others", "Vendor fix")!.textContent).toContain("Waiting on Mosyle administrator");
-  expect(cardIn(slot, "others", "Old waiting")!.textContent).toContain("Waiting on owner not recorded");
+  expect(cardIn(slot, "others", "Old waiting")!.textContent).toContain("Waiting, owner not recorded");
   expect(column(slot, "done").textContent).toContain("No new results.");
 });
 
@@ -90,18 +91,20 @@ it("uses side-by-side columns when the panel is wide", async () => {
   } finally { globalThis.ResizeObserver = original; }
 });
 
-it("expands a card to show outcome, context, options, links, owner thread, and actions", async () => {
+it("expands a card to show only extended context and actions", async () => {
   const { slot } = mount([{ ...decision, context: "Staging passed." }]);
   const toggle = await slot.findByRole("button", { name: /Review Flo360 launch PRs\. Waiting on Michael\. Expand/ });
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(toggle);
   expect(toggle.getAttribute("aria-expanded")).toBe("true");
   const detail = document.getElementById(toggle.getAttribute("aria-controls")!)!;
-  expect(detail.textContent).toContain("What you need to decide or do");
   expect(detail.textContent).toContain("Approve after CI passes");
   expect(detail.textContent).toContain("Staging passed.");
-  expect(within(detail).getByText("PR flo360#4417").closest("a")?.getAttribute("href")).toBe("https://github.com/acme/flo360/pull/4417");
-  expect(within(within(detail).getByRole("button", { name: /Runner audit/ })).getByRole("img", { name: "Waiting for input" })).toBeTruthy();
+  expect(detail.textContent).toContain("Descriptions cleaned");
+  // The surface already shows the request, links, and threads; the detail never repeats them.
+  expect(detail.textContent).not.toContain("approve PR #4417");
+  expect(within(detail).queryByRole("link")).toBeNull();
+  expect(within(detail).queryByRole("button", { name: /thread/ })).toBeNull();
   expect(within(detail).getByRole("button", { name: "Ask Orchestrator to explain" })).toBeTruthy();
   expect(slot.container.textContent).not.toContain(bot.soul || "SOUL");
 });
@@ -146,14 +149,15 @@ it("moves a card with Alt+Arrow keys and keeps focus on it", async () => {
   expect(calls).toHaveLength(2);
 });
 
-it("moves a card with the Move menu and keeps a named other owner", async () => {
+it("moves a card from its actions menu and keeps a named other owner", async () => {
   const calls: StatusInput[] = [];
   const vendor = task("o", "waiting", { title: "Vendor fix", waitingOn: "agent", waitingFor: "Codex" });
   const { slot, view } = mount([vendor], undefined, (input) => mover(view, calls)(input));
-  const trigger = await slot.findByRole("button", { name: /Move Vendor fix\. Now in Waiting on others/ });
+  const trigger = await slot.findByRole("button", { name: /Actions for Vendor fix\. Now in Waiting on others/ });
+  expect(trigger.textContent).toBe("");
   fireEvent.keyDown(trigger, { key: "ArrowDown" });
   const menu = await slot.findByRole("menu");
-  expect(within(menu).getAllByRole("menuitem").map((item) => [item.textContent, item.hasAttribute("data-disabled")])).toEqual([["Now", false], ["Waiting on Michael", false], ["Waiting on others", true], ["Done", false]]);
+  expect(within(menu).getAllByRole("menuitem").map((item) => [item.textContent, item.hasAttribute("data-disabled")])).toEqual([["Now", false], ["Waiting on Michael", false], ["Waiting on others", true], ["Done", false], ["Edit notes", false]]);
   fireEvent.click(within(menu).getByRole("menuitem", { name: "Now" }));
   await waitFor(() => expect(calls).toEqual([{ taskId: vendor.id, status: "now" }]));
 });
@@ -215,7 +219,9 @@ it("lets Michael read the full outcome before acknowledging from the expanded ca
   const unread = task("u", "done", { title: "Long result", needsAcknowledgement: true, outcome: "Line one\nLine two with the full outcome" });
   const { slot } = mount([unread], (input) => ({ ...unread, acknowledgedAt: input.acknowledged ? NOW : null, needsAcknowledgement: false }));
   fireEvent.click(await slot.findByRole("button", { name: /Long result\. Done, new result\. Expand/ }));
-  expect(cardIn(slot, "done", "Long result")!.querySelector(".work-card-detail")!.textContent).toContain("Line two with the full outcome");
+  const summary = cardIn(slot, "done", "Long result")!.querySelector(".work-summary")!;
+  expect(summary.className).not.toContain("line-clamp");
+  expect(summary.textContent).toContain("Line two with the full outcome");
 });
 
 it("drafts an unsent Ask question for the explaining conversation without sending anything", async () => {
@@ -253,4 +259,89 @@ it("formats relative update times", () => {
   expect(relativeTime(NOW, NOW)).toBe("just now");
   expect(relativeTime(NOW - 3 * 3_600_000, NOW)).toBe("3h ago");
   expect(relativeTime(NOW - 3 * 86_400_000, NOW)).toBe("3d ago");
+});
+
+const chipLabel = (button: HTMLElement) => button.querySelector(".truncate")?.textContent;
+it("shows state, next owner, next action, and one-click links on a collapsed card", async () => {
+  const card = task("scan", "waiting", {
+    title: "Await review", threadId: "worker", waitingOn: "other", waitingFor: "Jordan",
+    nextStep: "Worker thr_gk39jiiy9k: Jordan re-reviews PR #5914 (thr_7h7b9bxquq).", links: ["https://github.com/acme/web/pull/5914", "https://acme.pitch.example.com/"],
+  });
+  const { slot } = mount([card]);
+  const row = (await slot.findByText("Await review")).closest("li")!;
+  expect(row.querySelector(".work-status")!.textContent).toBe("Waiting on Jordan");
+  expect(row.textContent).toContain("Test bot");
+  expect(row.querySelector(".work-summary")!.textContent).toBe("Next: Worker: Jordan re-reviews PR #5914.");
+  expect(row.textContent).not.toMatch(/thr_/);
+  expect(within(row).queryByRole("button", { name: /^Move/ })).toBeNull();
+  // PR and proof links open outside BB and look unlike thread links.
+  const pr = within(row).getByRole("link", { name: "Pull request web#5914, opens outside BB" });
+  expect(pr.getAttribute("href")).toBe("https://github.com/acme/web/pull/5914");
+  expect(pr.textContent).toBe("PR #5914");
+  expect(pr.className).toContain("border");
+  expect(within(row).getByRole("link", { name: "Link acme.pitch.example.com, opens outside BB" })).toBeTruthy();
+  const worker = within(row).getByRole("button", { name: "Open Worker thread: Runner audit" });
+  const owner = within(row).getByRole("button", { name: "Open Test bot's owner thread: Test bot main" });
+  expect([chipLabel(worker), chipLabel(owner)]).toEqual(["Worker thread", "Owner thread"]);
+  expect(worker.className).toContain("bg-state-hover");
+  expect(worker.className).not.toContain("border");
+  expect(within(worker).getByRole("img", { name: "Waiting for input" })).toBeTruthy();
+  fireEvent.click(worker);
+  fireEvent.click(owner);
+  expect(slot.inspection.navigateCalls).toEqual([{ method: "toThread", threadId: "worker" }, { method: "toThread", threadId: "main" }]);
+  expect(within(row).getByRole("button", { name: /Await review\. Waiting on others\. Expand/ }).getAttribute("aria-expanded")).toBe("false");
+});
+
+it("labels a card that links only its owner's main as the owner thread, and never invents links", async () => {
+  const { slot } = mount([
+    task("own", "now", { title: "Owner only", threadId: "main" }),
+    task("none", "now", { title: "Nothing linked", threadId: null }),
+    task("other", "now", { title: "Other bot", botId: orchestrator.id, threadId: null }),
+  ]);
+  const ownerOnly = (await slot.findByText("Owner only")).closest("li")!;
+  expect(within(ownerOnly).getAllByRole("button", { name: /thread/ }).map(chipLabel)).toEqual(["Owner thread"]);
+  expect(ownerOnly.textContent).toContain("No PR or proof link");
+  expect(ownerOnly.querySelector(".work-status")!.textContent).toBe("In progress");
+  const nothing = slot.getByText("Nothing linked").closest("li")!;
+  expect(within(nothing).queryAllByRole("link")).toEqual([]);
+  expect(within(nothing).queryAllByRole("button", { name: /thread/ }).map(chipLabel)).toEqual(["Owner thread"]);
+  expect(within(slot.getByText("Other bot").closest("li")!).getByRole("button", { name: "Open Orchestrator's owner thread: Orchestrator main" })).toBeTruthy();
+});
+
+it("shows No links recorded when neither links nor threads exist", async () => {
+  const lonely = task("lonely", "now", { title: "Lonely", botId: "bot-missing", threadId: null });
+  const { slot } = mount([lonely]);
+  const row = (await slot.findByText("Lonely")).closest("li")!;
+  expect(row.querySelector(".work-no-links")!.textContent).toBe("No links recorded");
+  expect(within(row).queryAllByRole("link")).toEqual([]);
+});
+
+it("keeps Acknowledge visible on a collapsed new result and never starts a drag from a link or button", async () => {
+  const unread = task("ack", "done", { title: "Fresh result", needsAcknowledgement: true, threadId: "worker", links: ["https://github.com/acme/web/pull/7"] });
+  const { slot } = mount([unread]);
+  const row = (await slot.findByText("Fresh result")).closest("li")!;
+  expect(row.querySelector(".work-status")!.textContent).toBe("New result");
+  expect(within(row).getByRole("button", { name: "Acknowledge" })).toBeTruthy();
+  for (const target of [within(row).getByRole("link"), within(row).getByRole("button", { name: /Worker thread/ }), within(row).getByRole("button", { name: "Acknowledge" })]) {
+    fireEvent.pointerDown(target);
+    const transfer = dataTransfer();
+    fireEvent.dragStart(target, { dataTransfer: transfer });
+    expect(row.getAttribute("data-dragging")).toBe("false");
+    expect(transfer.types).toEqual([]);
+  }
+  expect(within(row).getByRole("link").getAttribute("draggable")).toBe("false");
+  // The card surface itself still drags.
+  const toggle = within(row).getByRole("button", { name: /Fresh result\. Done, new result/ });
+  fireEvent.pointerDown(toggle);
+  fireEvent.dragStart(row, { dataTransfer: dataTransfer() });
+  expect(row.getAttribute("data-dragging")).toBe("true");
+});
+
+it("labels links compactly and strips raw conversation IDs from summaries", () => {
+  expect(taskLinkLabel("https://github.com/acme/web/commit/7e37873abcdef")).toEqual({ kind: "link", label: "web@7e37873" });
+  expect(taskLinkLabel("https://github.com/acme/web/actions/runs/36595800037")).toEqual({ kind: "link", label: "web CI run" });
+  expect(withoutThreadIds("Worker thr_gk39jiiy9k: finish the build")).toBe("Worker: finish the build");
+  expect(withoutThreadIds("thr_abcdef12 owns it (see @thread:thr_zzzzzz99).")).toBe("owns it (see).");
+  expect(withoutThreadIds("Keep (thr_abcdef12) out")).toBe("Keep out");
+  expect(withoutThreadIds("No IDs here")).toBe("No IDs here");
 });

@@ -140,7 +140,8 @@ export function agentTaskIssues(task: Pick<BotTask, "status" | "nextStep" | "out
 export type BotTask = z.infer<typeof taskSchema>;
 export type TaskStatus = BotTask["status"];
 export type WaitingOn = (typeof WAITING_ON)[number];
-export const taskBotSchema = z.object({ id, name: z.string(), role: z.string(), avatar: avatarSchema }).strict();
+// mainThreadId is the selected main (public, as in bb bots list); the card labels it the owner thread.
+export const taskBotSchema = z.object({ id, name: z.string(), role: z.string(), avatar: avatarSchema, mainThreadId: id.nullable() }).strict();
 export type TaskBot = z.infer<typeof taskBotSchema>;
 
 export const rpcContract = defineRpcContract({

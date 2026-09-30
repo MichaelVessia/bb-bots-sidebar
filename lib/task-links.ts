@@ -18,7 +18,14 @@ export function taskLinkLabel(value: string): { kind: TaskLinkKind; label: strin
     if (parts[2] === "pull") return { kind: "pr", label: `${parts[1]}#${parts[3]}` };
     if (parts[2] === "issues") return { kind: "issue", label: `${parts[1]}#${parts[3]}` };
   }
+  if (url.hostname === "github.com" && parts[2] === "commit" && parts[3]) return { kind: "link", label: `${parts[1]}@${parts[3].slice(0, 7)}` };
+  if (url.hostname === "github.com" && parts[2] === "actions" && parts[3] === "runs" && parts[4]) return { kind: "link", label: `${parts[1]} CI run` };
   if (url.hostname === "linear.app" && parts[1] === "issue" && parts[2]) return { kind: "issue", label: parts[2].toUpperCase() };
   if (url.hostname.endsWith(".atlassian.net") && parts[0] === "browse" && parts[1]) return { kind: "issue", label: parts[1].toUpperCase() };
   return { kind: "link", label: url.hostname };
+}
+
+// Card summaries read as prose; raw conversation IDs (thr_…) belong to the thread links.
+export function withoutThreadIds(text: string): string {
+  return text.replace(/\s*\((?:@thread:)?thr_[a-z0-9]{6,}\)|\s*(?:@thread:)?\bthr_[a-z0-9]{6,}\b/gi, "").replace(/^\s*[:,;-]\s*/, "").replace(/[ \t]{2,}/g, " ").trim();
 }

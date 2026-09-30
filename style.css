@@ -342,3 +342,11 @@
 .bots-sidebar [data-thread-drop-target][data-drop-position="inside"] > .thread-row {
   outline: 1px solid var(--primary);
 }
+
+/* Work card status: a restrained dot; words carry the meaning. */
+.work-status-dot { background: var(--muted-foreground); }
+.work-status[data-tone="active"] .work-status-dot { background: var(--foreground); }
+.work-status[data-tone="you"] .work-status-dot { background: var(--warning); }
+.work-status[data-tone="new"] .work-status-dot { background: var(--success); }
+.work-status[data-tone="waiting"] .work-status-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-foreground); }
+.work-status[data-tone="done"] { color: var(--muted-foreground); }

@@ -7,7 +7,7 @@ import { TASKS_CHANGED, type BotTask, type TaskBot, type TaskStatus, type Waitin
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { askQuestion, queueAskPrefill } from "../lib/ask-prefill";
 import { relativeTime } from "../lib/relative-time";
-import { taskLinkLabel } from "../lib/task-links";
+import { taskLinkLabel, withoutThreadIds, type TaskLinkKind } from "../lib/task-links";
 import { Button } from "./ui/button";
 import { BotIcon } from "./bot-icon";
 import { ConversationStatusIcon } from "./conversation-status-icon";
@@ -94,7 +94,7 @@ function usePanelWidth(element: React.RefObject<HTMLElement | null>) {
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 // The column already says who is waiting; drop a leading "Michael:" address.
 const requestText = (task: BotTask) => columnOf(task) === "michael" ? task.nextStep.replace(/^michael\s*[:,-]\s*/i, "") : task.nextStep;
-const primaryText = (task: BotTask) => task.status === "done" ? task.outcome : requestText(task);
+const primaryText = (task: BotTask) => withoutThreadIds(task.status === "done" ? task.outcome : requestText(task));
 const threadTitle = (thread: PluginSidebarThread | undefined) => thread ? thread.title ?? thread.titleFallback ?? "Untitled conversation" : "Open conversation";
 
 function Age({ at, now }: { at: number; now: number }) {
@@ -105,19 +105,47 @@ function Chevron({ direction }: { direction: "right" | "down" }) {
   return <svg aria-hidden="true" width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">{direction === "down" ? <path d="m5 8 5 5 5-5" /> : <path d="m8 5 5 5-5 5" />}</svg>;
 }
 
-function OwnerLink({ task, bot, thread }: { task: BotTask; bot: TaskBot | undefined; thread: PluginSidebarThread | undefined }) {
-  const navigate = useBbNavigate();
-  const content = <>{bot ? <BotIcon avatar={bot.avatar} size={14} /> : null}<span className="truncate">{bot?.name ?? "Unknown bot"}</span></>;
-  return task.threadId
-    ? <button type="button" className="work-owner-link flex min-w-0 items-center gap-1 rounded-sm hover:text-foreground hover:underline" title={`Open ${threadTitle(thread)}`} aria-label={`${bot?.name ?? "Unknown bot"}: open ${threadTitle(thread)}`} onClick={() => navigate.toThread(task.threadId!)}>{content}</button>
-    : <span className="flex min-w-0 items-center gap-1">{content}</span>;
+// Status names the state and who holds the next action, in a few words.
+type Tone = "active" | "you" | "waiting" | "new" | "done";
+export function cardStatus(task: BotTask, column: ColumnId): { text: string; tone: Tone } {
+  if (column === "now") return { text: "In progress", tone: "active" };
+  if (column === "michael") return { text: "Needs you", tone: "you" };
+  if (column === "others") return { text: task.waitingOn ? `Waiting on ${waitingLabel(task)}` : "Waiting, owner not recorded", tone: "waiting" };
+  return task.needsAcknowledgement ? { text: "New result", tone: "new" } : { text: "Done", tone: "done" };
 }
 
-function Links({ links }: { links: string[] }) {
+const ICON_PROPS = { "aria-hidden": true, width: 12, height: 12, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round", className: "shrink-0" } as const;
+function LinkIcon({ kind }: { kind: TaskLinkKind }) {
+  if (kind === "pr") return <svg {...ICON_PROPS}><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="4.5" cy="12.5" r="1.5" /><circle cx="11.5" cy="12.5" r="1.5" /><path d="M4.5 5v6M11.5 11V6.5A2 2 0 0 0 9.5 4.5H7m1.5-1.5L7 4.5 8.5 6" /></svg>;
+  if (kind === "issue") return <svg {...ICON_PROPS}><circle cx="8" cy="8" r="5.5" /><circle cx="8" cy="8" r="1" fill="currentColor" /></svg>;
+  return <svg {...ICON_PROPS}><path d="M6.5 9.5 9.5 6.5M7 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1M9 11.5l-1 1a2.5 2.5 0 0 1-3.5-3.5l1-1" /></svg>;
+}
+const ExternalIcon = () => <svg {...ICON_PROPS} width={10} height={10}><path d="M6 3h7v7M13 3 5 11" /></svg>;
+const ThreadIcon = () => <svg {...ICON_PROPS}><path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h7A1.5 1.5 0 0 1 13 4.5v5a1.5 1.5 0 0 1-1.5 1.5H7l-3 2.5V11h.5" /></svg>;
+
+// PR and proof links open outside BB: outlined, with an external arrow.
+const EXTERNAL_CHIP_CLASS = "work-external-link inline-flex h-6 min-w-0 items-center gap-1 rounded-md border border-border px-1.5 text-[11px] font-medium text-foreground hover:bg-state-hover max-md:pointer-coarse:h-9 max-md:pointer-coarse:px-2.5";
+// Conversations open inside BB: filled, with a thread icon and live status.
+const THREAD_CHIP_CLASS = "work-thread-link inline-flex h-6 min-w-0 items-center gap-1 rounded-md bg-state-hover px-1.5 text-[11px] text-foreground hover:bg-state-active max-md:pointer-coarse:h-9 max-md:pointer-coarse:px-2.5";
+const LINK_KIND_NAME: Record<TaskLinkKind, string> = { pr: "Pull request", issue: "Issue", link: "Link" };
+
+function ExternalLinks({ links }: { links: string[] }) {
   return <>{links.map((link) => {
     const { kind, label } = taskLinkLabel(link);
-    return <UrlLink key={link} href={link} className="work-external-link underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground" title={link}>{kind === "pr" ? "PR " : kind === "issue" ? "Issue " : ""}{label}</UrlLink>;
+    const shown = kind === "pr" ? `PR #${label.split("#")[1]}` : label;
+    return <UrlLink key={link} href={link} draggable={false} className={EXTERNAL_CHIP_CLASS} title={link} aria-label={`${LINK_KIND_NAME[kind]} ${label}, opens outside BB`} data-link-kind={kind}>
+      <LinkIcon kind={kind} /><span className="max-w-[10rem] truncate">{shown}</span><ExternalIcon />
+    </UrlLink>;
   })}</>;
+}
+
+function ThreadLink({ role, threadId, thread, botName }: { role: "worker" | "owner"; threadId: string; thread: PluginSidebarThread | undefined; botName: string }) {
+  const navigate = useBbNavigate();
+  const label = role === "worker" ? "Worker thread" : "Owner thread";
+  const description = role === "worker" ? `${label}: ${threadTitle(thread)}` : `${botName}'s ${label.toLowerCase()}: ${threadTitle(thread)}`;
+  return <button type="button" className={THREAD_CHIP_CLASS} data-thread-role={role} title={description} aria-label={`Open ${description}`} onClick={() => navigate.toThread(threadId)}>
+    {thread ? <ConversationStatusIcon thread={thread} /> : <ThreadIcon />}<span className="truncate">{label}</span>
+  </button>;
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -127,18 +155,18 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   </div>;
 }
 
-function Missing({ children }: { children: ReactNode }) {
-  return <p className="text-xs text-muted-foreground">{children}</p>;
-}
-
-function MoveMenu({ task, column, onMove }: { task: BotTask; column: ColumnId; onMove: (column: ColumnId) => void }) {
+// A quiet alternative to dragging for touch and keyboard users.
+function CardMenu({ task, column, onMove, onEditNotes }: { task: BotTask; column: ColumnId; onMove: (column: ColumnId) => void; onEditNotes: () => void }) {
   const portalScope = usePortalScopeProps();
   return <DropdownMenu.Root>
-    <DropdownMenu.Trigger asChild><Button type="button" variant="ghost" size="sm" className="work-move-menu h-6 shrink-0 gap-1 px-1.5 text-[11px]" aria-label={`Move ${task.title}. Now in ${columnTitle(column)}`}>
-      Move<Chevron direction="down" />
+    <DropdownMenu.Trigger asChild><Button type="button" variant="ghost" size="sm" className="work-card-menu h-6 w-6 shrink-0 p-0 text-muted-foreground hover:text-foreground max-md:pointer-coarse:h-9 max-md:pointer-coarse:w-9" aria-label={`Actions for ${task.title}. Now in ${columnTitle(column)}`}>
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.25" /><circle cx="8" cy="8" r="1.25" /><circle cx="12.5" cy="8" r="1.25" /></svg>
     </Button></DropdownMenu.Trigger>
     <DropdownMenu.Portal><DropdownMenu.Content {...portalScope} align="end" sideOffset={4} className="z-50 min-w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+      <DropdownMenu.Label className="px-2 py-1 text-[11px] text-muted-foreground">Move to</DropdownMenu.Label>
       {COLUMNS.map((entry) => <DropdownMenu.Item key={entry.id} disabled={entry.id === column} className={MENU_ITEM_CLASS} onSelect={() => onMove(entry.id)}>{entry.title}</DropdownMenu.Item>)}
+      <DropdownMenu.Separator className="my-1 h-px bg-border" />
+      <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onEditNotes}>Edit notes</DropdownMenu.Item>
     </DropdownMenu.Content></DropdownMenu.Portal>
   </DropdownMenu.Root>;
 }
@@ -196,13 +224,20 @@ type CardProps = {
 function TaskCard({ task, column, bots, threadBots, threads, now, saving, expanded, onToggle, onMove, onSaveNotes, onAcknowledge, onDragStart, onDragEnd, dragging }: CardProps) {
   const navigate = useBbNavigate();
   const detailId = useId();
+  const summaryId = useId();
   const [editing, setEditing] = useState(false);
+  // Links and buttons on the card are click targets, never drag handles.
+  const dragAllowed = useRef(true);
   const bot = bots.get(task.botId);
-  const thread = task.threadId ? threads.get(task.threadId) : undefined;
+  const botName = bot?.name ?? "Unknown bot";
+  // The owner thread is the bot's selected main, linked only while it still belongs to that bot.
+  const ownerThreadId = bot?.mainThreadId && threadBots[bot.mainThreadId] === bot.id ? bot.mainThreadId : null;
+  const workerThreadId = task.threadId && task.threadId !== ownerThreadId ? task.threadId : null;
   // Existing records may predate askThreadId; the latest writer can explain them.
   const askThreadId = task.askThreadId ?? task.updatedByThreadId ?? task.threadId;
   const askName = (askThreadId ? bots.get(threadBots[askThreadId] ?? "")?.name : undefined) ?? threadTitle(askThreadId ? threads.get(askThreadId) : undefined);
   const unread = task.status === "done" && task.needsAcknowledgement;
+  const status = cardStatus(task, column);
   const index = COLUMNS.findIndex((entry) => entry.id === column);
   const onKeyDown = (event: KeyboardEvent) => {
     // Alt+Arrow moves the card to the previous or next column.
@@ -212,46 +247,50 @@ function TaskCard({ task, column, bots, threadBots, threads, now, saving, expand
     if (target) onMove(target.id);
   };
   const summary = primaryText(task);
-  return <li className="work-card rounded-lg border border-border bg-background data-[dragging=true]:opacity-40 data-[saving=true]:opacity-70" data-task-id={task.id} data-dragging={dragging} data-saving={saving} draggable={!editing} onDragStart={onDragStart} onDragEnd={onDragEnd}>
-    <div className="flex items-start gap-1 p-2 pb-1">
-      <button type="button" className="work-card-toggle flex min-w-0 flex-1 cursor-grab select-none items-start gap-1 rounded-sm text-left active:cursor-grabbing" data-focus-key={task.id} aria-expanded={expanded} aria-controls={detailId}
+  const extended = Boolean(task.recommendation || task.options.length || task.context || (task.status !== "done" && task.outcome));
+  return <li className="work-card rounded-lg border border-border bg-background data-[dragging=true]:opacity-40 data-[saving=true]:opacity-70" data-task-id={task.id} data-dragging={dragging} data-saving={saving} draggable={!editing}
+    onPointerDownCapture={(event) => { dragAllowed.current = !(event.target as Element).closest("a, button:not(.work-card-toggle), input, textarea, select"); }}
+    onDragStart={(event) => { if (!dragAllowed.current) { event.preventDefault(); return; } onDragStart(event); }} onDragEnd={onDragEnd}>
+    <div className="flex items-start gap-1 p-2 pb-1.5">
+      <button type="button" className="work-card-toggle flex min-w-0 flex-1 cursor-grab select-none items-start gap-1 rounded-sm text-left active:cursor-grabbing" data-focus-key={task.id} aria-expanded={expanded} aria-controls={detailId} aria-describedby={summaryId}
         aria-label={`${task.title}. ${columnTitle(column)}${unread ? ", new result" : ""}. ${expanded ? "Collapse" : "Expand"}. Alt+Arrow keys move it.`} onClick={onToggle} onKeyDown={onKeyDown}>
         <span className="mt-0.5 text-muted-foreground"><Chevron direction={expanded ? "down" : "right"} /></span>
-        <span className="min-w-0 flex-1">
+        <span className="min-w-0 flex-1 space-y-1">
           <span className="block text-[13px] font-medium leading-5 text-foreground">{task.title}</span>
-          {!expanded ? <span className={`mt-0.5 line-clamp-2 text-xs leading-[18px] ${summary ? "text-foreground/85" : "italic text-muted-foreground"}`}>{summary || (task.status === "done" ? "No outcome recorded." : "No next step recorded.")}</span> : null}
+          <span className="work-status-line flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-muted-foreground">
+            {/* Only a long waiting owner may truncate; short states always read in full. */}
+            <span className={`work-status flex items-center gap-1.5 font-medium text-foreground ${status.tone === "waiting" ? "min-w-[4.5rem]" : "shrink-0"}`} data-tone={status.tone} title={status.text}>
+              <span aria-hidden="true" className="work-status-dot size-1.5 shrink-0 rounded-full" /><span className={expanded ? "" : "truncate"}>{status.text}</span>
+            </span>
+            <span aria-hidden="true">·</span>
+            {/* The status keeps priority; the bot name truncates first. */}
+            <span className="flex min-w-0 shrink-[20] items-center gap-1">{bot ? <BotIcon avatar={bot.avatar} size={14} /> : null}<span className="truncate" title={botName}>{botName}</span></span>
+            <span aria-hidden="true">·</span>
+            <span className="shrink-0"><Age at={task.updatedAt} now={now} /></span>
+          </span>
+          <span id={summaryId} className={`work-summary text-xs leading-[18px] ${expanded ? "block whitespace-pre-wrap" : "line-clamp-2"} ${summary ? "text-foreground/85" : "italic text-muted-foreground"}`}>
+            {summary ? <><span className="text-muted-foreground">{task.status === "done" ? "Result: " : "Next: "}</span>{summary}</> : task.status === "done" ? "No outcome recorded." : "No next step recorded."}
+          </span>
         </span>
       </button>
-      <MoveMenu task={task} column={column} onMove={onMove} />
+      <CardMenu task={task} column={column} onMove={onMove} onEditNotes={() => { if (!expanded) onToggle(); setEditing(true); }} />
     </div>
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-2 pb-2 text-[11px] text-muted-foreground">
-      {unread ? <span className="work-new rounded-full bg-state-active px-1.5 font-medium text-foreground">New result</span> : null}
-      {column === "others" ? <span className="work-waiting-on text-foreground/85">Waiting on <span className={task.waitingOn ? "font-medium" : "italic text-muted-foreground"}>{waitingLabel(task)}</span></span> : null}
-      <OwnerLink task={task} bot={bot} thread={thread} />
-      <span aria-hidden="true">·</span>
-      <Age at={task.updatedAt} now={now} />
-      {saving ? <span role="status">Saving…</span> : null}
-      {unread ? <Button type="button" variant="outline" size="sm" className="ml-auto h-6 px-2 text-[11px]" onClick={() => onAcknowledge(true)}>Acknowledge</Button> : null}
+    <div className="work-links flex min-w-0 flex-wrap items-center gap-1 px-2 pb-2 pl-[22px]">
+      <ExternalLinks links={task.links} />
+      {workerThreadId ? <ThreadLink role="worker" threadId={workerThreadId} thread={threads.get(workerThreadId)} botName={botName} /> : null}
+      {ownerThreadId ? <ThreadLink role="owner" threadId={ownerThreadId} thread={threads.get(ownerThreadId)} botName={botName} /> : null}
+      {!task.links.length ? <span className="work-no-links px-0.5 text-[11px] italic text-muted-foreground">{workerThreadId || ownerThreadId ? "No PR or proof link" : "No links recorded"}</span> : null}
+      {saving ? <span role="status" className="text-[11px] text-muted-foreground">Saving…</span> : null}
+      {unread ? <Button type="button" variant="outline" size="sm" className="work-acknowledge ml-auto h-6 px-2 text-[11px] max-md:pointer-coarse:h-9 max-md:pointer-coarse:px-3" onClick={() => onAcknowledge(true)}>Acknowledge</Button> : null}
     </div>
     <div id={detailId} hidden={!expanded} className="work-card-detail space-y-3 border-t border-border px-2 py-2">
       {expanded ? <>
         {editing ? <NotesEditor task={task} column={column} onSave={onSaveNotes} onClose={() => setEditing(false)} /> : <>
-          <Field label={column === "michael" ? "What you need to decide or do" : column === "done" ? "Outcome" : "Next step"}>
-            {summary ? <p className="whitespace-pre-wrap">{summary}</p> : <Missing>{task.status === "done" ? "No outcome recorded." : "No next step recorded."}</Missing>}
-          </Field>
           {task.recommendation ? <Field label="Recommendation"><p className="whitespace-pre-wrap">{task.recommendation}</p></Field> : null}
           {task.options.length ? <Field label="Options"><ol className="list-decimal space-y-0.5 pl-4">{task.options.map((option) => <li key={option}>{option}</li>)}</ol></Field> : null}
           {task.context ? <Field label="Context"><p className="whitespace-pre-wrap">{task.context}</p></Field> : null}
           {task.status !== "done" && task.outcome ? <Field label="Last result"><p className="whitespace-pre-wrap">{task.outcome}</p></Field> : null}
-          <Field label="Links">{task.links.length ? <div className="flex flex-wrap gap-x-3 gap-y-0.5"><Links links={task.links} /></div> : <Missing>No PR or issue link was recorded.</Missing>}</Field>
-          <Field label="Owner">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="flex items-center gap-1">{bot ? <BotIcon avatar={bot.avatar} size={16} /> : null}{bot?.name ?? "Unknown bot"}</span>
-              {task.threadId ? <button type="button" className="work-thread-link flex min-w-0 items-center gap-1 rounded-sm" onClick={() => navigate.toThread(task.threadId!)}>
-                {thread ? <ConversationStatusIcon thread={thread} /> : null}<span className="truncate underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground">{threadTitle(thread)}</span>
-              </button> : <Missing>No conversation is linked.</Missing>}
-            </div>
-          </Field>
+          {!extended ? <p className="text-xs text-muted-foreground">No further context recorded.</p> : null}
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setEditing(true)}>Edit notes</Button>
             {askThreadId ? <Button type="button" variant="outline" size="sm" className="work-ask h-7 text-xs" onClick={() => { queueAskPrefill(askThreadId, askQuestion(task)); navigate.toThread(askThreadId); }}>Ask {askName} to explain</Button> : null}
@@ -379,7 +418,7 @@ export function WorkPanel() {
   // Right-panel tab (flush layout): the panel owns its padding and scrolling.
   return <div ref={root} className="work-panel flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-2">
     {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
-    <p role={announcement?.error ? "alert" : "status"} className={`min-h-4 px-1 text-[11px] ${announcement?.error ? "text-destructive" : "text-muted-foreground"}`}>{announcement?.text ?? (data ? "Drag a card, use Move, or press Alt+Arrow on a card." : "")}</p>
+    <p role={announcement?.error ? "alert" : "status"} className={`min-h-4 px-1 text-[11px] ${announcement?.error ? "text-destructive" : "text-muted-foreground"}`}>{announcement?.text ?? (data ? "Move a card by dragging it, with Alt+Arrow, or from its ⋯ menu." : "")}</p>
     {!data && !error ? <p className="text-sm text-muted-foreground">Loading tasks…</p> : null}
     {body}
   </div>;
