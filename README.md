@@ -26,7 +26,8 @@ Demo data only: [Sidebar](docs/screenshots/sidebar.png) ·
 [Create menu](docs/screenshots/create-menu.png) ·
 [Project during bot creation](docs/screenshots/bot-new-project.png) ·
 [State in Edit bot](docs/screenshots/bot-state.png) ·
-[Appearance choices](docs/screenshots/bot-appearance.png)
+[Appearance choices](docs/screenshots/bot-appearance.png) ·
+[Delete bot](docs/screenshots/bot-delete-confirm.png)
 
 ## Private state
 
@@ -94,6 +95,28 @@ does not delete that project or its files. Unsaved project forms create nothing.
 Retries retain the same request ID to avoid duplicate projects. Existing folder
 registrations are rejected rather than silently reused. Bot state stays private
 in BB; a bot still needs no project or special working directory.
+
+## Deleting bots
+
+Right-click a bot and choose **Delete bot…**. The dialog lists what changes, and
+**Delete bot** stays disabled until you type the bot's exact name.
+
+- The bot's SOUL.md, MEMORY.md, settings, and private exports are deleted. This
+  cannot be undone.
+- Its conversations, including archived ones, stay in BB. They become unassigned
+  and appear in **Chats**, where you can assign them to another bot.
+- Its Work tasks stay in Work unchanged. Their owner shows as "Name (deleted)";
+  only the bot's public name, role, and avatar are kept for that label.
+- It releases every project it owns and leaves every project it joined. New
+  conversations in those projects no longer default to it.
+- Project records and project files do not change.
+- Delete refuses while any of the bot's conversations is working or waits for input.
+
+`bb bots delete <bot-id> --yes` does the same from the CLI. Without `--yes` it
+prints what would change and exits without deleting.
+
+[Delete dialog](docs/screenshots/bot-delete-confirm.png) ·
+[Running-work refusal](docs/screenshots/bot-delete-refused.png)
 
 ## State tools
 
@@ -347,6 +370,7 @@ bb bots list --json --limit 50 --offset 0
 bb bots message <bot-id-or-exact-name> "Please review the changes"
 bb bots message <bot-id> "My reply" --thread <sender-conversation-id>
 bb bots create "Release captain" --role "Release manager" --soul "You own releases." --project <project-id> --own
+bb bots delete <bot-id> --yes
 ```
 
 `bb bots create` (and the matching `bot_create` agent tool in bot conversations) uses the editor's create path: random appearance, the first connected machine unless `--host` is given, and the Main section. `--project` joins an existing work project; `--own` also claims it and fails if another bot owns it. The new bot starts with no conversations. Output shows only public metadata.

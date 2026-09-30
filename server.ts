@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
-import { rpcContract, stateReadSchema, stateMutationSchema, stateMutationToolSchema, stateMutationResultSchema, normalizeStateMutation, botCreateRequestSchema, botCreateToolSchema, TASKS_CHANGED, type BotCreateRequest, type BotMetadata, type BotStateMutation } from "./contract";
+import { rpcContract, stateReadSchema, stateMutationSchema, stateMutationToolSchema, stateMutationResultSchema, normalizeStateMutation, botCreateRequestSchema, botCreateToolSchema, TASKS_CHANGED, type BotCreateRequest, type BotDeleteResult, type BotMetadata, type BotStateMutation } from "./contract";
 import { createBotStore, EMPTY_HASHES, nextTimestamp } from "./lib/bot-store";
 import { applyState, BotStateConflictError, createPrivateBotState, stateContent } from "./lib/private-state";
 import { memoryFacts, mutateStateDocument } from "./lib/state-actions";
@@ -11,7 +11,7 @@ import { createdBotSummary, registerBotsCli } from "./lib/bots-cli";
 import { createTaskStore } from "./lib/bot-tasks";
 import { randomAvatar } from "./lib/appearance";
 import { registerBotMentions } from "./lib/bot-mentions";
-import { listBotConversations } from "./lib/bot-conversations";
+import { listBotConversations, liveThreadsByBot, threadStatus } from "./lib/bot-conversations";
 import { botProjectContext } from "./lib/project-context";
 import { BOT_GUIDANCE, botInstructions } from "./lib/bot-instructions";
 import { MEMORY_MAX_CHARS, validateMemory } from "./lib/memory-limit";
@@ -71,7 +71,7 @@ export default async function plugin(bb: BbPluginApi) {
   async function validateLinks(ids: string[]) {
     if (new Set(ids).size !== ids.length) throw new Error("A project can only be linked once");
     const projects = await bb.sdk.projects.list();
-    const legacyHomes = new Set(store.list().map((bot) => bot.legacyHomeProjectId));
+    const legacyHomes = store.legacyHomes();
     for (const id of ids) {
       if (!projects.some((project) => project.id === id && project.kind === "standard") || legacyHomes.has(id)) throw new Error("Link an existing work project, not a legacy bot home");
     }
@@ -137,6 +137,24 @@ export default async function plugin(bb: BbPluginApi) {
     const projects = projectId ? [projectId] : [];
     return createBot({ name, role, soul, hostId: machine, avatar: randomAvatar(), sectionId: null, linkedProjectIds: projects, ownedProjectIds: own ? projects : [] });
   }
+  function deleteBot(botId: string): Promise<BotDeleteResult> {
+    return serial("registry", () => serial(botId, async () => {
+      const bot = store.require(botId);
+      const busy = ((await liveThreadsByBot(bb, store, resolveOwner)).get(botId) ?? []).filter((thread) => ["working", "waiting"].includes(threadStatus(thread)));
+      if (busy.length) throw new Error(`${bot.name} has running work in ${busy.map((thread) => thread.id).join(", ")}. Stop it or let it finish, then delete the bot.`);
+      // Exports are derived from SQLite. Remove them first: if the row delete
+      // then fails, the next prepare rewrites them from the surviving row.
+      const exportWarning = state.removeExports(botId);
+      const removed = store.remove(botId);
+      const keptTaskIds = tasks.list().filter((task) => task.botId === botId).map((task) => task.id);
+      publish();
+      if (keptTaskIds.length) publishTasks();
+      return {
+        botId, name: removed.bot.name, detachedConversationIds: removed.detachedThreadIds, releasedProjectIds: removed.releasedProjectIds,
+        leftProjectIds: removed.bot.linkedProjectIds.filter((id) => !removed.releasedProjectIds.includes(id)), keptTaskIds, warnings: exportWarning ? [exportWarning] : [],
+      };
+    }));
+  }
   async function updateProjectRole(botId: string, action: "join" | "leave" | "own" | "release", projectId: string) {
     return serial("registry", () => serial(botId, async () => {
       store.require(botId);
@@ -158,7 +176,7 @@ export default async function plugin(bb: BbPluginApi) {
       let projectToJoin: string | null = null;
       if (atCreation || thread.status === "pending") {
         const projects = await bb.sdk.projects.list();
-        const legacyHome = store.list().some((bot) => bot.legacyHomeProjectId === thread.projectId);
+        const legacyHome = store.legacyHomes().has(thread.projectId);
         if (!legacyHome && projects.some((project) => project.id === thread.projectId && project.kind === "standard")) projectToJoin = thread.projectId;
       }
       const adopted = store.adoptInherited(thread.id, inherited, projectToJoin);
@@ -179,7 +197,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   async function projectView(bot: BotMetadata, currentProjectId?: string): Promise<StateView> {
     const projects = await bb.sdk.projects.list({ includePersonal: true });
-    const legacyHomes = new Set(store.list().map((entry) => entry.legacyHomeProjectId));
+    const legacyHomes = store.legacyHomes();
     const ownership = (id: string) => { const entry = store.projectOwner(id); return { ownerBotId: entry?.botId ?? null, ownerName: entry ? store.require(entry.botId).name : null }; };
     const available = projects.filter((project) => project.kind === "standard" && !legacyHomes.has(project.id)).map((project) => ({ id: project.id, name: project.name, ...ownership(project.id) }));
     const current = projects.find((project) => project.id === currentProjectId);
@@ -283,25 +301,27 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.created", async ({ thread }) => { await routeNewThread(thread, true); });
 
-  registerBotsCli(bb, store, resolveOwner, createBotFromRequest, tasks, publishTasks);
+  registerBotsCli(bb, store, resolveOwner, createBotFromRequest, deleteBot, tasks, publishTasks);
   registerBotMentions(bb, store);
 
   bb.rpc.register(rpcContract, {
     project_browse: ({ hostId, path }) => browseProjectDirectory(bb, { hostId, path }),
     project_create: (input) => serial("project-create", () => serial(`project-create:${input.requestId}`, () => createWorkProject(bb, store, input))),
     bots_list: async () => {
-      const warnings = await importLegacy();
+      // An import that overlaps a delete could recreate the deleted bot.
+      const warnings = await serial("registry", importLegacy);
       await Promise.all(store.list().map((bot) => serial(bot.id, () => state.prepare(bot.id))));
       const [hosts, projects] = await Promise.all([bb.sdk.hosts.list(), bb.sdk.projects.list({ includePersonal: true })]);
       const personal = projects.find((project) => project.kind === "personal");
       if (!personal) throw new Error("BB's personal project is unavailable");
       personalId = personal.id;
       const bots = store.list();
-      const legacyHomes = new Set(bots.map((bot) => bot.legacyHomeProjectId));
+      const legacyHomes = store.legacyHomes();
       return { bots, projectOwners: store.projectOwners().map(({ projectId, botId }) => ({ projectId, botId })), warnings: [...warnings, ...state.warnings()], personalProjectId: personalId, threadBindings: store.bindings(), sections: store.sections(), hosts: hosts.map((host) => ({ id: host.id, name: host.name, connected: host.status === "connected" })), projects: projects.filter((project) => project.kind === "standard" && !legacyHomes.has(project.id)).map((project) => ({ id: project.id, name: project.name })) };
     },
     bot_create: createBot,
     bot_prepare: ({ botId }) => serial(botId, () => state.prepare(botId)),
+    bot_delete: ({ botId }) => deleteBot(botId),
     bot_update: saveBotIdentity,
     bots_reorder: ({ bots: placements }) => serial("registry", async () => {
       const bots = store.list();
@@ -423,8 +443,9 @@ export default async function plugin(bb: BbPluginApi) {
         const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
         return thread && (thread.archivedAt || thread.deletedAt) ? threadId : null;
       }));
+      const deleted = Object.entries(store.deletedBotLabels()).filter(([id]) => taskBots.has(id) && !bots.some((bot) => bot.id === id));
       return {
-        tasks: list, bots: bots.map(({ id, name, role, avatar, mainThreadId }) => ({ id, name, role, avatar, mainThreadId })),
+        tasks: list, bots: [...bots.map(({ id, name, role, avatar, mainThreadId }) => ({ id, name, role, avatar, mainThreadId })), ...deleted.map(([id, label]) => ({ id, ...label, name: `${label.name} (deleted)`, mainThreadId: null }))],
         threadBots: Object.fromEntries(owners.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))),
         archivedThreadIds: archived.filter((threadId): threadId is string => Boolean(threadId)),
       };

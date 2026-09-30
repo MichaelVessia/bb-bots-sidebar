@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, parse } from "node:path";
 import { z } from "zod";
 import { stateFileSchema, type BotMetadata, type BotStateFile } from "../contract";
@@ -111,6 +111,40 @@ export function createPrivateBotState(bb: BbPluginApi, store: BotStore, publish:
   function warnings(): string[] {
     return store.list().flatMap((bot) => Object.values(localWarnings.get(bot.id) ?? store.state<StateWarnings>(`private-state-warning:${bot.id}`) ?? {}));
   }
+  function assertOwned(path: string, botId: string) {
+    const markerPath = join(path, "bot.json");
+    const markerInfo = assertExport(markerPath);
+    if (markerInfo) {
+      const fd = openSync(markerPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        if (fstatSync(fd).size > 1024 * 1024) throw new Error("Private state ownership marker is too large");
+        const marker: unknown = JSON.parse(readFileSync(fd, "utf8"));
+        if (!marker || typeof marker !== "object" || !("version" in marker) || marker.version !== 3 || !("id" in marker) || marker.id !== botId) throw new Error("Private state ownership marker does not match this bot");
+      } finally { closeSync(fd); }
+    } else if (readdirSync(path).length) {
+      throw new Error("Private state directory has no ownership marker; refusing to adopt existing files");
+    }
+  }
+  // Removes only files this plugin writes, after proving the directory is this
+  // bot's. Anything else stays, and the directory with it.
+  function removeExports(botId: string): string | null {
+    localWarnings.delete(botId);
+    try {
+      const path = directory(botId);
+      if (!stat(path)) return null;
+      assertDirectory(path);
+      assertOwned(path, botId);
+      const ours = (name: string) => (legacyStateFiles as readonly string[]).includes(name) || /^\.export-[0-9a-f-]+\.tmp$/.test(name);
+      for (const name of readdirSync(path)) if (ours(name)) unlinkSync(join(path, name));
+      // Keep the ownership marker beside anything we do not own.
+      if (readdirSync(path).some((name) => name !== "bot.json")) throw new Error("Private state directory contains foreign files");
+      if (stat(join(path, "bot.json"))) unlinkSync(join(path, "bot.json"));
+      rmdirSync(path);
+      return null;
+    } catch {
+      return `Bot ${botId}: some private state exports could not be removed (unexpected files or unsafe ownership).`;
+    }
+  }
   async function mirror(input: BotMetadata) {
     try {
       // A caller's stale snapshot must never replace newer committed exports.
@@ -120,18 +154,7 @@ export function createPrivateBotState(bb: BbPluginApi, store: BotStore, publish:
       assertDirectory(dirname(root));
       ensureDirectory(root);
       ensureDirectory(path);
-      const markerPath = join(path, "bot.json");
-      const markerInfo = assertExport(markerPath);
-      if (markerInfo) {
-        const fd = openSync(markerPath, constants.O_RDONLY | constants.O_NOFOLLOW);
-        try {
-          if (fstatSync(fd).size > 1024 * 1024) throw new Error("Private state ownership marker is too large");
-          const marker: unknown = JSON.parse(readFileSync(fd, "utf8"));
-          if (!marker || typeof marker !== "object" || !("version" in marker) || marker.version !== 3 || !("id" in marker) || marker.id !== bot.id) throw new Error("Private state ownership marker does not match this bot");
-        } finally { closeSync(fd); }
-      } else if (readdirSync(path).length) {
-        throw new Error("Private state directory has no ownership marker; refusing to adopt existing files");
-      }
+      assertOwned(path, bot.id);
       // Preflight every destination before writing any exports. These bounded,
       // synchronous operations never yield between ownership checks and renames.
       for (const file of stateFiles) assertExport(join(path, file));
@@ -225,6 +248,6 @@ export function createPrivateBotState(bb: BbPluginApi, store: BotStore, publish:
     publish();
     return document(bot, file);
   }
-  return { prepare, refresh: prepare, read, update, mirror, warnings, directory };
+  return { prepare, refresh: prepare, read, update, mirror, removeExports, warnings, directory };
 }
 export type PrivateBotState = ReturnType<typeof createPrivateBotState>;

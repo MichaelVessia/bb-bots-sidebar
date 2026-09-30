@@ -129,6 +129,32 @@ export function createBotStore(bb: BbPluginApi) {
         return project.botId;
       }).immediate();
     },
+    // Conversations and projects outlive the bot: drop only its rows, so its
+    // conversations become unassigned Chats and its projects become unowned.
+    remove(id: string) {
+      return db.transaction(() => {
+        const bot = get(id); if (!bot) throw new Error("Bot no longer exists");
+        const releasedProjectIds = ownedProjects(id);
+        const detachedThreadIds = (db.prepare("SELECT thread_id FROM bot_threads WHERE bot_id = ? ORDER BY thread_id").all(id) as { thread_id: string }[]).map((row) => row.thread_id);
+        db.prepare("DELETE FROM bot_threads WHERE bot_id = ?").run(id);
+        db.prepare("DELETE FROM bot_starts WHERE bot_id = ?").run(id);
+        db.prepare("DELETE FROM bot_project_owners WHERE bot_id = ?").run(id);
+        for (const key of [`legacy-state:${id}`, `legacy-record:${id}`, `private-state-warning:${id}`]) db.prepare("DELETE FROM bot_state WHERE key = ?").run(key);
+        // The v1 importer recreates a missing bot for any unfinished snapshot project.
+        const snapshot = state<{ done: string[] }>("legacy-snapshot");
+        if (bot.legacyProjectId && snapshot && !snapshot.done.includes(bot.legacyProjectId)) setState("legacy-snapshot", { ...snapshot, done: [...snapshot.done, bot.legacyProjectId] });
+        // A legacy home stays a bot home after its bot is gone, never a work project.
+        if (bot.legacyHomeProjectId) setState("retired-legacy-homes", [...new Set([...state<string[]>("retired-legacy-homes") ?? [], bot.legacyHomeProjectId])]);
+        // Work tasks outlive their owner. Keep only its public label for them.
+        setState("deleted-bot-labels", { ...state<Record<string, DeletedBotLabel>>("deleted-bot-labels"), [id]: { name: bot.name, role: bot.role, avatar: bot.avatar } });
+        db.prepare("DELETE FROM bots WHERE id = ?").run(id);
+        return { bot, releasedProjectIds, detachedThreadIds };
+      }).immediate();
+    },
+    deletedBotLabels(): Record<string, DeletedBotLabel> { return state<Record<string, DeletedBotLabel>>("deleted-bot-labels") ?? {}; },
+    legacyHomes(): Set<string> {
+      return new Set([...list().flatMap((bot) => bot.legacyHomeProjectId ? [bot.legacyHomeProjectId] : []), ...state<string[]>("retired-legacy-homes") ?? []]);
+    },
     databasePath: db.name,
     legacySource(id: string): LegacyBotStateSource | null {
       const stored = state<LegacyBotStateSource>(`legacy-state:${id}`);
@@ -156,6 +182,7 @@ export function createBotStore(bb: BbPluginApi) {
     cancelStart(token: string) { db.prepare("DELETE FROM bot_starts WHERE token = ?").run(token); },
   };
 }
+export type DeletedBotLabel = Pick<BotMetadata, "name" | "role" | "avatar">;
 export interface ProjectOwnership { projectId: string; botId: string; assignedAt: number }
 export interface LegacyBotStateSource { hostId: string; path: string; homeProjectId: string | null }
 export type BotStore = ReturnType<typeof createBotStore>;
