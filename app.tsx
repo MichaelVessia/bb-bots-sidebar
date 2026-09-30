@@ -42,6 +42,7 @@ import { ResizableChats } from "@/components/resizable-chats";
 import { ConversationDialog } from "@/components/conversation-dialog";
 import type { ConversationTarget } from "@/components/conversation-dialog";
 import { AssignConversationDialog } from "@/components/assign-conversation-dialog";
+import { DeleteBotDialog } from "@/components/delete-bot-dialog";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { MachineSelect } from "./components/machine-select";
@@ -404,6 +405,7 @@ function BotGroup({
   onToggleTopics,
   onEdit,
   onVisibilityChange,
+  onDelete,
   hidden,
   onOpenBot,
   onNavigate,
@@ -430,6 +432,7 @@ function BotGroup({
   onToggleTopics: () => void;
   onEdit: (tab?: EditorTab) => void;
   onVisibilityChange: (hidden: boolean) => void;
+  onDelete: () => void;
   hidden: boolean;
   onOpenBot: () => void;
   onNavigate: () => void;
@@ -473,6 +476,7 @@ function BotGroup({
         { label: "Edit bot…", action: () => onEdit() },
         { label: "Add / manage projects…", action: () => onEdit("projects") },
         { label: hidden ? "Show in sidebar" : "Hide until activity", action: () => onVisibilityChange(!hidden) },
+        { label: "Delete bot…", action: onDelete },
       ]}>
       <div className="project-row relative flex cursor-grab items-center rounded-lg px-1.5 aria-current:bg-state-active data-[hidden=true]:opacity-55 data-[dragging=true]:opacity-35 active:cursor-grabbing" aria-current={botSelected ? "page" : undefined} data-hidden={hidden} data-dragging={dragging} data-bot-drop-target={metadata.id} data-conversation-drop={Boolean(dropHint)} draggable onDragStart={onDragStart} onDragEnd={onDragEnd}>
         <button type="button" className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left" onClick={(event) => { if (event.detail < 2) onOpenBot(); }} onDoubleClick={(event) => { event.preventDefault(); onToggleTopics(); }}>
@@ -582,6 +586,7 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const [showOtherChats, setShowOtherChats] = useState(false);
   const chatsOtherId = useId();
   const [editor, setEditor] = useState<EditorTarget | null>(null);
+  const [deletingBot, setDeletingBot] = useState<BotMetadata | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [addingSection, setAddingSection] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
@@ -794,6 +799,8 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
     else await openBotConversation(bot);
   }
 
+  const projectName = (id: string) => projects.find(project => project.id === id)?.name ?? "Unavailable project";
+  const deletingOwnedIds = deletingBot ? ownedProjectIdsFor(deletingBot.id, projectOwners) : [];
   const chatsTree = useMemo(() => conversationTree(
     sidebar.threads.filter((thread) => !owners.has(thread.id) && !locallyArchived.has(thread.id)),
     null, activeThreadId, 8,
@@ -839,6 +846,7 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
                 onToggleTopics={() => setShownTopicBots((current) => { const next = new Set(current); if (next.has(botId)) next.delete(botId); else next.add(botId); return next; })}
                 onEdit={(tab) => run(() => editBot(metadata, tab))} hidden={hiddenIds.has(botId)}
                 onVisibilityChange={(hiddenUntilActivity) => run(() => rpc.call("visibility_set", { botId, hiddenUntilActivity }).then(refresh))}
+                onDelete={() => setDeletingBot(metadata)}
                 onOpenBot={() => run(() => openBot(metadata))}
                 onReorder={(threadId, targetThreadId, position) => run(async () => { await rpc.call("conversation_reorder", { botId, threadId, targetThreadId, position }); await refresh(); })}
                 onNewConversation={() => run(() => openBotConversation(metadata))}
@@ -876,6 +884,16 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
       {assigning ? <AssignConversationDialog bots={bots} title={assigning.title ?? assigning.titleFallback ?? "Untitled conversation"} onClose={() => setAssigning(null)} onAssign={async (botId) => {
         await assignConversation(assigning, botId);
       }} /> : null}
+      {deletingBot ? <DeleteBotDialog name={deletingBot.name} conversationCount={(threadsByBot.get(deletingBot.id) ?? []).filter(thread => !thread.isArchived).length}
+        ownedProjectNames={deletingOwnedIds.map(projectName)} joinedProjectNames={deletingBot.linkedProjectIds.filter(id => !deletingOwnedIds.includes(id)).map(projectName)}
+        onClose={() => setDeletingBot(null)} onDelete={async () => {
+          const result = await rpc.call("bot_delete", { botId: deletingBot.id });
+          if (editor?.kind === "edit" && editor.metadata.id === result.botId) setEditor(null);
+          if (conversation?.bot.id === result.botId) setConversation(null);
+          await refresh();
+          toast.success(`Deleted ${result.name}. Its conversations are in Chats.`);
+          for (const warning of result.warnings) toast.warning(warning);
+        }} /> : null}
       {conversation ? <ConversationDialog target={conversation} onClose={() => setConversation(null)} onCreate={async (request) => {
         const bot = bots.find((bot) => bot.id === conversation.bot.id);
         if (!bot) throw new Error("This bot is no longer available.");
