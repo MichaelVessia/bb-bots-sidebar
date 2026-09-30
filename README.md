@@ -351,7 +351,7 @@ bb bots create "Release captain" --role "Release manager" --soul "You own releas
 
 `bb bots create` (and the matching `bot_create` agent tool in bot conversations) uses the editor's create path: random appearance, the first connected machine unless `--host` is given, and the Main section. `--project` joins an existing work project; `--own` also claims it and fails if another bot owns it. The new bot starts with no conversations. Output shows only public metadata.
 
-Messages use BB's native queue: idle conversations start a turn, busy conversations receive the message later. The default destination is the recipient's first visible ordered conversation; `--thread` must belong to that bot. Messages identify the invoking conversation and its bound bot, clearly distinguish agent coordination from user instructions, and include an asynchronous reply command. FYI messages need no acknowledgement. Unbound conversations and external CLI callers are labeled accurately. The CLI does not create conversations or change membership, bindings, permissions, or private state.
+Messages use BB's native queue: idle conversations start a turn, busy conversations receive the message later. The default destination is the recipient's selected main conversation (`mainThreadId`). Only a bot with no selected main falls back to its first visible ordered conversation. An unavailable, archived, or foreign selected main is reported as an error, never silently replaced. `--thread` must belong to that bot. Messages identify the invoking conversation and its bound bot, clearly distinguish agent coordination from user instructions, and include an asynchronous reply command. FYI messages need no acknowledgement. Unbound conversations and external CLI callers are labeled accurately. The CLI does not create conversations or change membership, bindings, permissions, or private state.
 
 Listing exposes public bot metadata only and paginates at 100 bots maximum. Names must match exactly; use IDs for duplicate names. Quote messages (maximum 12,000 characters). Delivery receipts confirm acceptance, not task completion or a reply.
 
@@ -361,6 +361,9 @@ JSON includes both project IDs and names. The first column is the stable bot ID
 accepted by `bb bots message`. Activity aggregates all non-archived bot conversations,
 including inherited children and hidden conversations: waiting takes precedence over
 working, then error, then idle. Visibility separately reflects the bot's hidden setting.
+**MAIN CONVERSATION** (`mainThreadId` in JSON) is the default message target. JSON
+`mainSource` is `selected`, `first-conversation` (no main selected), `unavailable`
+(selected main is archived, missing, or not bound to the bot), or null.
 
 Incoming bot messages use BB's native attributed, expandable agent-message row
 and sender-conversation link. Inside it, a **🤖 Bot message · Name** heading and

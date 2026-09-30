@@ -122,8 +122,8 @@ or reintroduce hover toolbars when making unrelated changes.
   manual order wins, unplaced roots/siblings follow newest-created first. Activity,
   unread state, pinning, and navigation never reshuffle them. No bot-root overflow.
   Do not change bindings, parents, projects, environments, or historical main
-  pointers to reorder. Click target, activity badge, project defaults,
-  and default bot-message destination use the same first visible root.
+  pointers to reorder. Click target, activity badge, and project defaults
+  use the same first visible root; the default bot-message destination is the selected main.
   Bot rows retain the bot name and role/title, followed by owned project names
   in the subtitle. Never substitute a conversation title or show member-only
   projects as owned. Keep this label stable when folding; truncate with full hover text.
@@ -254,8 +254,10 @@ or reintroduce hover toolbars when making unrelated changes.
   Configuration stays read-only; project state reads refresh the relationship.
 - `bb bots list` exposes paginated public metadata, never private bot documents.
   `bb bots message` uses native `threads.send` with `queue-if-active` and the invoking
-  `senderThreadId`. Default to the first visible ordered root; explicit reply threads must resolve
-  to the recipient bot. Resolve sender identity from bindings/inheritance, not project ownership.
+  `senderThreadId`. Default to the selected main (`mainThreadId`); fall back to the first visible ordered root
+  only when no main is set. An invalid, archived, or foreign selected main is an error, never a
+  silent fallback. Explicit reply threads must resolve to the recipient bot. `bb bots list`
+  reports the same selected main with `mainSource`. Resolve sender identity from bindings/inheritance, not project ownership.
   Never forge a sender, auto-create a conversation, or change permissions/bindings to send.
 - Frame messages as asynchronous agent coordination, not user approval. Include an exact
   sender-conversation reply command and discourage acknowledgement-only loops.

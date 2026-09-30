@@ -116,16 +116,51 @@ it("rejects duplicate names and empty conversation lists without routing side ef
   expect((await run(["message",b.id,"Hi"])).stderr).toContain("no visible conversation");
   expect(send).not.toHaveBeenCalled();
 });
-it("routes default messages to the first ordered root instead of the legacy main", async () => {
+it("routes default messages to the selected main instead of a newer or reordered task root", async () => {
+  const { host, b, run } = await setup();
+  host.threads.set("task", makeThreadResponse({ id: "task", createdAt: Date.now() + 1000 }));
+  host.store.bind("task", b.id);
+  host.store.mutate(b.id, current => ({ ...current, threadOrder: ["task", b.id] }));
+  expect((await run(["message", b.id, "Review"])).exitCode).toBe(0);
+  expect(host.harness.inspection.sdk.callsTo("threads.send")[0]?.[0]).toMatchObject({ threadId: b.id, mode: "queue-if-active" });
+  const listed = JSON.parse((await run(["list", "--json"])).stdout!);
+  expect(listed.bots.find((bot: { id: string }) => bot.id === b.id)).toMatchObject({ mainThreadId: b.id, mainSource: "selected" });
+  expect((await run(["list"])).stdout).toContain("MAIN CONVERSATION");
+  expect(host.store.require(b.id).mainThreadId).toBe(b.id);
+});
+it("falls back to the first ordered root only when no main is selected", async () => {
   const { host, b, run } = await setup();
   host.threads.set("preferred", makeThreadResponse({ id: "preferred", createdAt: 1 }));
   host.store.bind("preferred", b.id);
-  host.store.mutate(b.id, current => ({ ...current, threadOrder: ["preferred", b.id] }));
+  host.store.mutate(b.id, current => ({ ...current, mainThreadId: null, threadOrder: ["preferred", b.id] }));
   expect((await run(["message", b.id, "Review"])).exitCode).toBe(0);
-  expect(host.harness.inspection.sdk.callsTo("threads.send")[0]?.[0]).toMatchObject({ threadId: "preferred", mode: "queue-if-active" });
+  expect(host.harness.inspection.sdk.callsTo("threads.send")[0]?.[0]).toMatchObject({ threadId: "preferred" });
   const listed = JSON.parse((await run(["list", "--json"])).stdout!);
-  expect(listed.bots.find((bot: { id: string }) => bot.id === b.id).mainThreadId).toBe("preferred");
-  expect(host.store.require(b.id).mainThreadId).toBe(b.id);
+  expect(listed.bots.find((bot: { id: string }) => bot.id === b.id)).toMatchObject({ mainThreadId: "preferred", mainSource: "first-conversation" });
+  expect(host.store.require(b.id).mainThreadId).toBeNull();
+});
+it("keeps explicit --thread replies ahead of the selected main", async () => {
+  const { host, a, b, run } = await setup();
+  host.threads.set("reply", makeThreadResponse({ id: "reply", projectId: "project" })); host.store.bind("reply", b.id);
+  expect((await run(["message", b.id, "Hi", "--thread", "reply"], { threadId: a.id })).exitCode).toBe(0);
+  expect(host.harness.inspection.sdk.callsTo("threads.send")[0]?.[0]).toMatchObject({ threadId: "reply", senderThreadId: a.id });
+  expect((await run(["message", b.id, "Hi", "--thread", a.id])).stderr).toContain("does not belong to this bot");
+});
+it("reports an unavailable, archived, or foreign selected main instead of falling back to a task root", async () => {
+  const { host, a, b, run, send } = await setup();
+  host.threads.set("task", makeThreadResponse({ id: "task" })); host.store.bind("task", b.id);
+  host.store.save({ ...host.store.require(b.id), mainThreadId: "gone" });
+  let result = await run(["message", b.id, "Hi"]);
+  expect(result.stderr).toContain("selected main conversation gone is unavailable");
+  expect(JSON.parse((await run(["list", "--json"])).stdout!).bots.find((bot: { id: string }) => bot.id === b.id)).toMatchObject({ mainThreadId: "gone", mainSource: "unavailable" });
+  host.store.save({ ...host.store.require(b.id), mainThreadId: a.id });
+  result = await run(["message", b.id, "Hi"]);
+  expect(result.stderr).toContain(`selected main conversation ${a.id} does not belong to this bot`);
+  expect(JSON.parse((await run(["list", "--json"])).stdout!).bots.find((bot: { id: string }) => bot.id === b.id).mainSource).toBe("unavailable");
+  host.store.save({ ...host.store.require(b.id), mainThreadId: b.id });
+  host.threads.set(b.id, makeThreadResponse({ id: b.id, archivedAt: 1 }));
+  expect((await run(["message", b.id, "Hi"])).stderr).toContain("is archived or deleted");
+  expect(send).not.toHaveBeenCalled();
 });
 it("resolves inherited reply targets read-only and does not retry failed delivery",async () => {
   const {host,a,b,run}=await setup();
