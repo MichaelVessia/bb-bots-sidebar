@@ -180,6 +180,24 @@ it("does not let a concurrent legacy import resurrect the deleted bot", async ()
   expect((await list(host)).bots).toEqual([]);
 });
 
+it("keeps the deleted bot's Work tasks unchanged and labels their owner as deleted", async () => {
+  const host = await setup();
+  const { atlas } = await botWithHistory(host);
+  const beryl = await host.create("Beryl", []);
+  const task = async (bot: string, title: string) => JSON.parse((await host.harness.behavior.runCli(["task", "set", "--title", title, "--status", "waiting", "--next", "Pick a date", "--bot", bot, "--thread", "none", "--json"])).stdout!).task as { id: string };
+  const owned = await task(atlas.id, "Decide the release date");
+  const other = await task(beryl.id, "Other work");
+  const before = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: { id: string }[] };
+  const result = await remove(host, atlas.id);
+  expect(result.keptTaskIds).toEqual([owned.id]);
+  const view = await host.harness.behavior.callRpc("tasks_list", null) as { tasks: { id: string }[]; bots: { id: string; name: string; mainThreadId: string | null }[] };
+  expect(view.tasks).toEqual(before.tasks);
+  expect(view.tasks.map((entry) => entry.id).sort()).toEqual([owned.id, other.id].sort());
+  expect(view.bots.find((bot) => bot.id === atlas.id)).toMatchObject({ name: "Atlas (deleted)", mainThreadId: null });
+  expect(view.bots.find((bot) => bot.id === beryl.id)).toMatchObject({ name: "Beryl" });
+  expect((await host.harness.behavior.runCli(["task", "set", "--title", "New", "--status", "now", "--next", "N", "--bot", atlas.id, "--thread", "none"])).exitCode).toBe(1);
+});
+
 it("reports a missing bot", async () => {
   const host = await setup();
   await expect(remove(host, "bot_missing")).rejects.toThrow("Bot no longer exists");

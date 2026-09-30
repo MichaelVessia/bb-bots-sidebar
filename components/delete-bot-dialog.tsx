@@ -46,6 +46,7 @@ export function DeleteBotDialog({ name, conversationCount, ownedProjectNames, jo
         <li>{conversationCount ? `Its ${plural(conversationCount, "conversation")} stay in BB and move to Chats.` : "It has no open conversations."} Archived conversations also stay.</li>
         {ownedProjectNames.length ? <li>It releases ownership of {ownedProjectNames.join(", ")}. New conversations there no longer go to this bot.</li> : null}
         {joinedProjectNames.length ? <li>It leaves {joinedProjectNames.join(", ")}.</li> : null}
+        <li>Its Work tasks stay in Work, with the owner shown as deleted.</li>
         <li>Project files do not change.</li>
       </ul>
       <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">

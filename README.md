@@ -105,6 +105,8 @@ Right-click a bot and choose **Delete bot…**. The dialog lists what changes, a
   cannot be undone.
 - Its conversations, including archived ones, stay in BB. They become unassigned
   and appear in **Chats**, where you can assign them to another bot.
+- Its Work tasks stay in Work unchanged. Their owner shows as "Name (deleted)";
+  only the bot's public name, role, and avatar are kept for that label.
 - It releases every project it owns and leaves every project it joined. New
   conversations in those projects no longer default to it.
 - Project records and project files do not change.

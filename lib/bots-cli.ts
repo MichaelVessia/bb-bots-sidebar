@@ -21,7 +21,7 @@ Create when the user asks for a bot. --soul sets SOUL.md (max 4096 characters). 
 work project; add --own only when asked to route its new threads to the bot. Appearance is random;
 the machine defaults to the first connected one. The new bot starts with no conversations.
 Delete only when the user asks. It needs the exact bot ID and --yes, and refuses while the bot has
-running work. Conversations stay and move to Chats; projects and their files are unchanged.
+running work. Conversations stay and move to Chats; Work tasks stay; projects and their files are unchanged.
 The bot's SOUL.md, MEMORY.md, and settings are deleted permanently.
 
 ${TASK_USAGE}`;
@@ -167,16 +167,18 @@ export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: 
           if (!options.yes) {
             const owned = store.ownedProjects(bot.id).length;
             const conversations = store.bindings().filter((binding) => binding.botId === bot.id).length;
+            const ownedTasks = tasks.list().filter((task) => task.botId === bot.id).length;
             throw new Error([
               `Deleting ${printable(bot.name)} (${bot.id}) permanently removes its SOUL.md, MEMORY.md, and settings.`,
               `${conversations} bound conversation(s) stay and move to Chats. It releases ${owned} owned and leaves ${bot.linkedProjectIds.length - owned} joined project(s); project files are unchanged.`,
+              `${ownedTasks} Work task(s) stay in Work; their owner shows as deleted.`,
               `Rerun with --yes to delete: bb bots delete ${shellQuote(bot.id)} --yes`,
             ].join("\n"));
           }
           const result = await deleteBot(bot.id);
           return { exitCode: 0, stdout: options.json ? JSON.stringify(result) : [
             `Deleted ${printable(result.name)} (${result.botId}).`,
-            `${result.detachedConversationIds.length} conversation(s) moved to Chats. Released ${result.releasedProjectIds.length} owned and left ${result.leftProjectIds.length} joined project(s).`,
+            `${result.detachedConversationIds.length} conversation(s) moved to Chats. Released ${result.releasedProjectIds.length} owned and left ${result.leftProjectIds.length} joined project(s). ${result.keptTaskIds.length} Work task(s) kept.`,
             ...result.warnings,
           ].join("\n") };
         }

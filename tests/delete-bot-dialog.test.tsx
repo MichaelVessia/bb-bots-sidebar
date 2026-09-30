@@ -29,7 +29,7 @@ async function mount(deleteBot: () => unknown) {
   const dialog = await slot.findByRole("dialog", { name: "Delete bot" });
   return { slot, dialog };
 }
-const result = { botId: "atlas", name: "Atlas", detachedConversationIds: ["main"], releasedProjectIds: ["project"], leftProjectIds: ["other"], warnings: [] };
+const result = { botId: "atlas", name: "Atlas", detachedConversationIds: ["main"], releasedProjectIds: ["project"], leftProjectIds: ["other"], keptTaskIds: [], warnings: [] };
 const deleteCalls = (slot: Awaited<ReturnType<typeof mount>>["slot"]) => slot.inspection.rpcCalls.filter((call) => call.method === "bot_delete");
 
 it("explains what stays and what goes, and deletes only after the exact name is typed", async () => {
@@ -38,6 +38,7 @@ it("explains what stays and what goes, and deletes only after the exact name is 
   expect(dialog.textContent).toContain("Its 2 conversations stay in BB and move to Chats.");
   expect(dialog.textContent).toContain("It releases ownership of Shared project.");
   expect(dialog.textContent).toContain("It leaves Other project.");
+  expect(dialog.textContent).toContain("Its Work tasks stay in Work, with the owner shown as deleted.");
   expect(dialog.textContent).toContain("Project files do not change.");
   const input = within(dialog).getByRole("textbox", { name: "Bot name to confirm deletion" });
   const button = within(dialog).getByRole("button", { name: "Delete bot" }) as HTMLButtonElement;

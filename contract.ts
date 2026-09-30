@@ -99,7 +99,7 @@ export const stateMutationToolSchema = z.object({
 });
 export const stateMutationResultSchema = z.object({ botId: id, target: stateTargetSchema, changed: z.boolean(), revision: z.number(), state: z.json() }).strict();
 export const botDeleteResultSchema = z.object({
-  botId: id, name: z.string(), detachedConversationIds: z.array(id), releasedProjectIds: z.array(id), leftProjectIds: z.array(id), warnings: z.array(z.string()),
+  botId: id, name: z.string(), detachedConversationIds: z.array(id), releasedProjectIds: z.array(id), leftProjectIds: z.array(id), keptTaskIds: z.array(id), warnings: z.array(z.string()),
 }).strict();
 export type BotDeleteResult = z.infer<typeof botDeleteResultSchema>;
 

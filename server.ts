@@ -146,10 +146,12 @@ export default async function plugin(bb: BbPluginApi) {
       // then fails, the next prepare rewrites them from the surviving row.
       const exportWarning = state.removeExports(botId);
       const removed = store.remove(botId);
+      const keptTaskIds = tasks.list().filter((task) => task.botId === botId).map((task) => task.id);
       publish();
+      if (keptTaskIds.length) publishTasks();
       return {
         botId, name: removed.bot.name, detachedConversationIds: removed.detachedThreadIds, releasedProjectIds: removed.releasedProjectIds,
-        leftProjectIds: removed.bot.linkedProjectIds.filter((id) => !removed.releasedProjectIds.includes(id)), warnings: exportWarning ? [exportWarning] : [],
+        leftProjectIds: removed.bot.linkedProjectIds.filter((id) => !removed.releasedProjectIds.includes(id)), keptTaskIds, warnings: exportWarning ? [exportWarning] : [],
       };
     }));
   }
@@ -441,8 +443,9 @@ export default async function plugin(bb: BbPluginApi) {
         const thread = await bb.sdk.threads.get({ threadId }).catch(() => null);
         return thread && (thread.archivedAt || thread.deletedAt) ? threadId : null;
       }));
+      const deleted = Object.entries(store.deletedBotLabels()).filter(([id]) => taskBots.has(id) && !bots.some((bot) => bot.id === id));
       return {
-        tasks: list, bots: bots.map(({ id, name, role, avatar, mainThreadId }) => ({ id, name, role, avatar, mainThreadId })),
+        tasks: list, bots: [...bots.map(({ id, name, role, avatar, mainThreadId }) => ({ id, name, role, avatar, mainThreadId })), ...deleted.map(([id, label]) => ({ id, ...label, name: `${label.name} (deleted)`, mainThreadId: null }))],
         threadBots: Object.fromEntries(owners.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))),
         archivedThreadIds: archived.filter((threadId): threadId is string => Boolean(threadId)),
       };

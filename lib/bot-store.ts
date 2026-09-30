@@ -145,10 +145,13 @@ export function createBotStore(bb: BbPluginApi) {
         if (bot.legacyProjectId && snapshot && !snapshot.done.includes(bot.legacyProjectId)) setState("legacy-snapshot", { ...snapshot, done: [...snapshot.done, bot.legacyProjectId] });
         // A legacy home stays a bot home after its bot is gone, never a work project.
         if (bot.legacyHomeProjectId) setState("retired-legacy-homes", [...new Set([...state<string[]>("retired-legacy-homes") ?? [], bot.legacyHomeProjectId])]);
+        // Work tasks outlive their owner. Keep only its public label for them.
+        setState("deleted-bot-labels", { ...state<Record<string, DeletedBotLabel>>("deleted-bot-labels"), [id]: { name: bot.name, role: bot.role, avatar: bot.avatar } });
         db.prepare("DELETE FROM bots WHERE id = ?").run(id);
         return { bot, releasedProjectIds, detachedThreadIds };
       }).immediate();
     },
+    deletedBotLabels(): Record<string, DeletedBotLabel> { return state<Record<string, DeletedBotLabel>>("deleted-bot-labels") ?? {}; },
     legacyHomes(): Set<string> {
       return new Set([...list().flatMap((bot) => bot.legacyHomeProjectId ? [bot.legacyHomeProjectId] : []), ...state<string[]>("retired-legacy-homes") ?? []]);
     },
@@ -179,6 +182,7 @@ export function createBotStore(bb: BbPluginApi) {
     cancelStart(token: string) { db.prepare("DELETE FROM bot_starts WHERE token = ?").run(token); },
   };
 }
+export type DeletedBotLabel = Pick<BotMetadata, "name" | "role" | "avatar">;
 export interface ProjectOwnership { projectId: string; botId: string; assignedAt: number }
 export interface LegacyBotStateSource { hostId: string; path: string; homeProjectId: string | null }
 export type BotStore = ReturnType<typeof createBotStore>;
