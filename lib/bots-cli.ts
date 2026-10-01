@@ -112,7 +112,7 @@ export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: 
       { name: "list", summary: "List bot IDs, activity, visibility, and owned/joined project names without private state", usage: "bb bots list [--json] [--limit 1-100] [--offset N]" },
       { name: "message", summary: "Message a bot's main conversation, or reply to one of its conversations; queues while busy", usage: "bb bots message <bot-id-or-exact-name> <message> [--thread <conversation-id>] [--json]" },
       { name: "create", summary: "Create a bot with a name, role, SOUL identity, and optional project to join or own", usage: "bb bots create <name> [--role <role>] [--soul <identity>] [--project <project-id> [--own]] [--host <host-id>] [--json]" },
-      { name: "task", summary: "List, create, update, or remove Work view task records (Now, Waiting on Michael, Done)", usage: "bb bots task list|set|remove ... (bb bots task --help)" },
+      { name: "task", summary: "List, create, update, or remove legacy Work task records", usage: "bb bots task list|set|remove ... (bb bots task --help)" },
     ],
     async run(argv, ctx) {
       try {
