@@ -11,22 +11,22 @@ bb bots task set [<task-id>] [--title <title>] [--status now|waiting|done] [--bo
                  [--waiting-on michael|other|agent] [--waiting-for <who>] [--json]
 bb bots task remove <task-id> [--json]
 
-Tasks feed the Work view: Now, Waiting on Michael, and Done. Records are explicit;
-BB never infers a task's outcome from an idle conversation.
+These are legacy Work records. BB Tasks is the status source.
+Records are explicit; BB never infers an outcome from an idle conversation.
 Without <task-id>, set creates a task and prints its ID; --title and --status are required.
 The owner defaults to the invoking conversation's bot, and the linked thread to the
 invoking conversation. Use --thread none for no thread. Repeated --link options replace
 all links (max 5 https URLs, e.g. a PR or issue); --link none clears them.
 Now/Waiting need --next; Done needs --outcome.
 For decisions, --next states exactly what Michael must decide or do. --context (2000),
---recommendation (1000), and up to 5 single-line --option choices appear in the task
-detail; repeated --option replaces the list and --option none clears it. The Ask action
-drafts an unsent question in --ask-thread, which defaults to the creating conversation.
-Creating or updating a Done task puts it in Needs acknowledgement until Michael reads it.
+--recommendation (1000), and up to 5 single-line --option choices are stored in the
+record; repeated --option replaces the list and --option none clears it.
+--ask-thread stores a reference to a conversation and defaults to the creating conversation.
+Creating or updating a Done task sets its stored needsAcknowledgement flag.
 Waiting tasks name who holds the next action: --waiting-on michael, other (someone else:
 a person, team, or external party), or agent, plus --waiting-for with a name (120), e.g.
 "Mosyle administrator". The older value external is accepted and stored as other.
-Without --waiting-on the Work view shows the owner as not recorded, never as Michael.
+Without --waiting-on the waiting owner is not recorded.
 Leaving Waiting clears both fields.`;
 
 type TaskFields = Partial<Pick<BotTask, "title" | "status" | "botId" | "threadId" | "links" | "nextStep" | "outcome" | "context" | "recommendation" | "options" | "askThreadId" | "waitingOn" | "waitingFor">>;
@@ -48,7 +48,7 @@ export function createTaskStore(bb: BbPluginApi) {
       return db.transaction(() => {
         const current = taskId ? get(taskId) : null;
         if (taskId && !current) throw new Error(`Task not found: ${taskId}. Use bb bots task list for IDs.`);
-        if (!current && (db.prepare("SELECT COUNT(*) AS count FROM bot_tasks").get() as { count: number }).count >= TASK_LIMIT) throw new Error(`The Work view holds at most ${TASK_LIMIT} tasks. Remove old Done tasks with bb bots task remove.`);
+        if (!current && (db.prepare("SELECT COUNT(*) AS count FROM bot_tasks").get() as { count: number }).count >= TASK_LIMIT) throw new Error(`The legacy task store holds at most ${TASK_LIMIT} tasks. Remove old Done tasks with bb bots task remove.`);
         const now = Date.now();
         const next = {
           id: current?.id ?? `task_${randomUUID().replaceAll("-", "")}`, threadId: null, links: [], nextStep: "", outcome: "",

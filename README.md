@@ -129,35 +129,11 @@ Unused optional tool fields may be omitted or null. Shared memory, routines,
 channels, and scheduled skills are deliberately out of scope. Never store secrets
 in bot state.
 
-## Work view
+## Legacy Work records
 
-**Work** is a right-panel tab. Beside any thread, or on the New thread screen,
-open the panel launcher and choose **Work**. BB keeps the tab with that thread or
-screen.
-
-It is a Kanban board with four columns: **Now**, **Waiting on Michael**, **Waiting on
-others**, and **Done**. In the usual narrow right panel the columns stack as lanes;
-a panel at least 720 px wide shows them side by side.
-
-- **Cards** show the title, the next step (or outcome), owner, and age. Waiting on
-  others cards name who ("owner not recorded" when unknown; never Michael). Click a
-  card title to expand it: full next step or outcome, recommendation, options,
-  context, last result, links, the owner's conversation with live status,
-  **Edit notes**, and **Ask … to explain** (an unsent question in the conversation
-  that can explain the task; nothing is sent).
-- **Move a card** by dragging it to another column (every column shows a drop
-  zone; the one under the pointer highlights), with its **Move** menu, or with
-  **Alt+Arrow** keys on the focused card title. The card moves at once and shows
-  "Saving…"; the status line confirms the move. If saving fails, the card returns
-  to its column and the status line says why.
-- **Moves need no notes.** Next step, waiting person, and outcome stay optional and
-  editable afterwards with **Edit notes**. Moving into Waiting on others keeps an
-  existing person or agent owner; leaving Waiting clears it.
-- **Done** keeps new agent results (and later agent updates to Done tasks) at the
-  top with **New result** and **Acknowledge** until you read them; focus then moves
-  to the next new result. Your own moves to Done, older results, and acknowledged
-  results sit under **History**. **Mark unread** returns one to the top. Nothing is
-  acknowledged automatically.
+BB Tasks is the status source. The plugin no longer has a Work tab or panel.
+Existing records remain in `bot_tasks`. Use `bb bots task list` to read them.
+The task CLI remains available for reference.
 
 Tasks are small, explicit records in the plugin's SQLite database, keyed by
 `task_<id>`. Live thread state (working, waiting, error) is never copied into a
@@ -194,12 +170,9 @@ creating conversation. Older records read with empty decision fields.
 `--waiting-on` is `michael`, `other` (someone else), or `agent`; the older value
 `external` is still accepted and read as `other`, keeping its name;
 `--waiting-for` names who (120 characters). Older Waiting records have no owner
-and show "owner not recorded". Leaving Waiting clears both fields. Panel status
-changes record no writer thread and keep the task's ask conversation.
+and retain an empty owner field. Leaving Waiting clears both fields.
 Threads must exist; `--thread none` unlinks. Callers outside a bot conversation
-must pass `--bot`. The store holds at most 1,000 tasks. The Work page receives only
-public bot fields (name, role, avatar), never SOUL, memory, or settings. It refreshes
-on a realtime change signal, not by polling.
+must pass `--bot`. The store holds at most 1,000 tasks.
 
 ## Sidebar interactions
 
