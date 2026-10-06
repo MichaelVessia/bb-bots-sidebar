@@ -98,6 +98,10 @@ export const stateMutationToolSchema = z.object({
   if (!result.success) ctx.addIssue({ code: "custom", message: result.error.issues.some((issue) => issue.message.includes("MEMORY.md exceeds")) ? MEMORY_LIMIT_ERROR : "Invalid target/action fields. Use identity/set with expectedRevision and fields; memory/append|forget with fact or memory/overwrite with content (max 3000 characters) and expectedSha256 from bot_read_state; settings/set with values or unset with keys; project/join|leave|own|release with projectId." });
 });
 export const stateMutationResultSchema = z.object({ botId: id, target: stateTargetSchema, changed: z.boolean(), revision: z.number(), state: z.json() }).strict();
+export const botDeleteResultSchema = z.object({
+  botId: id, name: z.string(), detachedConversationIds: z.array(id), releasedProjectIds: z.array(id), leftProjectIds: z.array(id), keptTaskIds: z.array(id), warnings: z.array(z.string()),
+}).strict();
+export type BotDeleteResult = z.infer<typeof botDeleteResultSchema>;
 
 // Work tasks: explicit, ID-keyed status records. Thread state stays live data;
 // a task's status, outcome, and next step change only through explicit updates.
@@ -151,6 +155,7 @@ export const rpcContract = defineRpcContract({
   bot_create: { input: z.object({ ...editFields, hostId: id }).strict(), output: metadataSchema },
   bot_update: { input: z.object({ ...editFields, hostId: id.optional(), botId: id, expectedUpdatedAt: z.number(), expectedStateHashes: stateHashesSchema }).strict(), output: metadataSchema },
   bot_prepare: { input: z.object({ botId: id }).strict(), output: metadataSchema },
+  bot_delete: { input: z.object({ botId: id }).strict(), output: botDeleteResultSchema },
   bots_reorder: { input: z.object({ bots: z.array(z.object({ botId: id, sectionId: id.nullable() }).strict()).max(500) }).strict(), output: z.object({ ok: z.literal(true) }).strict() },
   section_create: { input: z.object({ name: z.string().trim().min(1).max(80) }).strict(), output: sectionSchema },
   section_update: { input: z.object({ sectionId: id, name: z.string().trim().min(1).max(80) }).strict(), output: sectionSchema },
