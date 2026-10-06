@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { backend } from "./backend-fixture";
 import { TASKS_CHANGED } from "../contract";
-import { isSafeTaskLink, taskLinkLabel } from "../lib/task-links";
+import { isSafeTaskLink } from "../lib/task-links";
 
 const hosts: Awaited<ReturnType<typeof backend>>[] = [];
 afterEach(async () => { for (const host of hosts.splice(0)) await host.harness.lifecycle.dispose(); });
@@ -22,6 +22,27 @@ async function setup() {
 }
 
 describe("Work task records", () => {
+  it("lists legacy stored records after reload without changing their stored data", async () => {
+    const { host, bot, run } = await setup();
+    const record = {
+      id: `task_${"a".repeat(32)}`, title: "Legacy result", status: "done", botId: bot.id,
+      threadId: "worker", links: [], nextStep: "", outcome: "Shipped",
+      createdAt: 1, updatedAt: 2, updatedByThreadId: null,
+    };
+    const data = JSON.stringify(record);
+    host.bb.storage.database().prepare("INSERT INTO bot_tasks(id,data,updated_at) VALUES (?,?,?)").run(record.id, data, record.updatedAt);
+    await host.reload();
+    const json = await run(["list", "--json"]);
+    expect(json.exitCode).toBe(0);
+    expect(JSON.parse(json.stdout!).tasks).toEqual([expect.objectContaining(record)]);
+    const text = await run(["list"]);
+    expect(text.exitCode).toBe(0);
+    expect(text.stdout).toContain(record.id);
+    expect(text.stdout).toContain(record.title);
+    expect(text.stdout).toContain(record.outcome);
+    expect(host.bb.storage.database().prepare("SELECT data FROM bot_tasks WHERE id = ?").get(record.id)).toEqual({ data });
+  });
+
   it("creates a task owned by the invoking bot and linked to its conversation", async () => {
     const { host, bot, create } = await setup();
     const task = await create(["--title", "Move CI runners", "--status", "now", "--next", "Wait for staging deploy", "--link", "https://github.com/acme/ci/pull/130"]);
@@ -227,12 +248,7 @@ describe("waiting owner", () => {
 });
 
 describe("task links", () => {
-  it("labels PRs and issues and accepts only credential-free https URLs", () => {
-    expect(taskLinkLabel("https://github.com/flocasts/flo-control/pull/130")).toEqual({ kind: "pr", label: "flo-control#130" });
-    expect(taskLinkLabel("https://github.com/acme/app/issues/7")).toEqual({ kind: "issue", label: "app#7" });
-    expect(taskLinkLabel("https://linear.app/acme/issue/sre-867/move-runners")).toEqual({ kind: "issue", label: "SRE-867" });
-    expect(taskLinkLabel("https://acme.atlassian.net/browse/AD-1107")).toEqual({ kind: "issue", label: "AD-1107" });
-    expect(taskLinkLabel("https://example.com/report")).toEqual({ kind: "link", label: "example.com" });
+  it("accepts only credential-free https URLs", () => {
     for (const bad of ["http://example.com", "https://a:b@example.com", "https://example.com/a b", `https://example.com/${"x".repeat(500)}`, "not a url"]) expect(isSafeTaskLink(bad)).toBe(false);
   });
 });

@@ -25,6 +25,16 @@ async function mount(withChat = false, status: Partial<ReturnType<typeof thread>
 }
 
 describe("Bots sidebar", () => {
+  it("renders the sidebar without a Work tab or composer bridge", async () => {
+    const { slot } = await mount();
+    expect(slot.getByText("Test bot")).toBeTruthy();
+    expect(app.threadLists.map((entry) => entry.id)).toEqual(["bot-projects"]);
+    expect(app.threadPanelActions).toEqual([]);
+    expect(app.newThreadPanelActions).toEqual([]);
+    expect(app.composerCustomizations).toEqual([]);
+    expect(slot.queryByRole("tab", { name: "Work" })).toBeNull();
+    expect(slot.container.querySelector(".work-panel")).toBeNull();
+  });
   it("counts every top-level conversation in the bot disclosure", async () => {
     const { slot } = await mount();
     const row = slot.getByText("Test bot").closest<HTMLElement>(".project-row")!;
